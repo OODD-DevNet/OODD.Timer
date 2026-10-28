@@ -84,7 +84,7 @@ dotnet run -c Release --project bench/OODD.Timer.Benchmark -- 1 10000
 
 > **这些数字只描述跑这条命令的那台机器**（Windows 11 10.0.26200、16 核、.NET 10、控制台无其他负载）。换机器、换系统、加了后台负载必须重测；基准程序会把 Markdown 表格直接打印出来，贴回你的 README 或 issue 即可。
 
-亚毫秒节拍的实测见 [docs/benchmarks.md](docs/benchmarks.md)。
+亚毫秒节拍的实测见 [docs/benchmarks.md](https://github.com/OODD-DevNet/OODD.Timer/blob/main/docs/benchmarks.md)。
 
 ---
 
@@ -392,7 +392,7 @@ using (RuntimeTuning.RequestSystemTimerResolution(1)) { /* ... */ }
 4. 用 `WaitMode.Spin` 或把 `SpinWindowNanoseconds` 设到 `MeasureKernelWakeLatency()` 的推荐值，别让窗口在运行中被尖峰撑大。
 5. 精度要求极高时，用 `HighResolutionScheduler` 单独起一个线程，只放这一两个定时器。
 
-详细的做法、每一步的实测影响与代价见 [docs/进阶：把误差压到极限.md](docs/进阶：把误差压到极限.md)。
+详细的做法、每一步的实测影响与代价见 [docs/进阶：把误差压到极限.md](https://github.com/OODD-DevNet/OODD.Timer/blob/main/docs/%E8%BF%9B%E9%98%B6%EF%BC%9A%E6%8A%8A%E8%AF%AF%E5%B7%AE%E5%8E%8B%E5%88%B0%E6%9E%81%E9%99%90.md)。
 
 ---
 
@@ -488,6 +488,6 @@ A：`dotnet run -c Release --project bench/OODD.Timer.Benchmark -- 1 10000`。�
 
 ## 许可
 
-[Apache License 2.0](LICENSE) © 2026 OODD
+[Apache License 2.0](https://github.com/OODD-DevNet/OODD.Timer/blob/main/LICENSE) © 2026 OODD
 
-可以商用、修改、再分发，也可以闭源使用；再分发时需保留 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)，并说明你改了什么。Apache-2.0 还附带显式的专利授权（第 3 条），这是它相对 MIT 最主要的区别。
+可以商用、修改、再分发，也可以闭源使用；再分发时需保留 [LICENSE](https://github.com/OODD-DevNet/OODD.Timer/blob/main/LICENSE) 与 [NOTICE](https://github.com/OODD-DevNet/OODD.Timer/blob/main/NOTICE)，并说明你改了什么。Apache-2.0 还附带显式的专利授权（第 3 条），这是它相对 MIT 最主要的区别。

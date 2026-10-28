@@ -22,7 +22,7 @@
     <Authors Condition="'$(Authors)' == ''">OODD</Authors>
     <Company>OODD</Company>
     <Product>OODD.Timer</Product>
-    <Version>1.0.0</Version>
+    <Version>0.0.1-preview18</Version>
     <Copyright>Copyright (c) 2026 OODD</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageProjectUrl>$(OoddRepositoryUrl)</PackageProjectUrl>

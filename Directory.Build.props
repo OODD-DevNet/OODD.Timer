@@ -1,0 +1,41 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningLevel>6</WarningLevel>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <Deterministic>true</Deterministic>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!-- ========================== NuGet 元数据 ==========================
+       仓库地址集中在这里；README 与 CHANGELOG 里的链接也指向同一地址。
+       仍可用 -p:OoddRepositoryUrl=... 在命令行覆盖（例如发布到镜像站时）。
+  -->
+  <PropertyGroup>
+    <OoddRepositoryUrl Condition="'$(OoddRepositoryUrl)' == ''">https://github.com/OODD-DevNet/OODD.Timer</OoddRepositoryUrl>
+    <Authors Condition="'$(Authors)' == ''">OODD</Authors>
+    <Company>OODD</Company>
+    <Product>OODD.Timer</Product>
+    <Version>1.0.0</Version>
+    <Copyright>Copyright (c) 2026 OODD</Copyright>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>$(OoddRepositoryUrl)</PackageProjectUrl>
+    <RepositoryUrl>$(OoddRepositoryUrl)</RepositoryUrl>
+    <RepositoryBranch>main</RepositoryBranch>
+    <PackageReleaseNotes>$(OoddRepositoryUrl)/blob/main/docs/CHANGELOG.md</PackageReleaseNotes>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <!-- "只给库工程生成 XML 文档"的条件依赖工程正文里的 IsTestProject，
+       因此那段判断写在 Directory.Build.targets（它在工程正文之后求值）。 -->
+
+</Project>

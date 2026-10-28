@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="README.md" />
+    <File Path="LICENSE" />
+    <File Path="docs/CHANGELOG.md" />
+    <File Path="docs/进阶：把误差压到极限.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/OODD.Timer/OODD.Timer.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OODD.Timer.Tests/OODD.Timer.Tests.csproj" />
+  </Folder>
+  <Folder Name="/bench/">
+    <Project Path="bench/OODD.Timer.Benchmark/OODD.Timer.Benchmark.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>跨平台的亚微秒级高精度定时器库：以单调时钟 + 自旋等待替代系统时钟节拍，摆脱 10~15ms 的定时器粒度。</Description>
+    <PackageTags>timer;high-resolution;precision;latency;spin;realtime;cross-platform;stopwatch</PackageTags>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>OODD.Timer</RootNamespace>
+    <AssemblyName>OODD.Timer</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- 等待引擎需要在最紧的循环里读时钟，禁止 JIT 引入额外边界检查 -->
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- 公开的包必须带 XML 文档：IDE 智能提示与 NuGet 站点上的说明都来自它 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+    <!-- Apache-2.0 第 4(d) 条：再分发时必须随附 NOTICE，所以它也要进包。 -->
+    <None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- NuGet 只认这个属性指向的文件为包内自述页；光是把 README.md 打进去不会生效。 -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+</Project>

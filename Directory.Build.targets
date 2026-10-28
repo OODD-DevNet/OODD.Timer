@@ -1,0 +1,9 @@
+<Project>
+
+  <!-- Directory.Build.props 求值时还看不到工程正文里的 IsTestProject，
+       所以"只给库工程生成 XML 文档"的判断必须放在本文件（它在工程正文之后求值）。 -->
+  <PropertyGroup Condition="'$(IsTestProject)' != 'true' and '$(OoddIsTool)' != 'true'">
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+</Project>

@@ -114,8 +114,6 @@ dotnet run -c Release --project bench/OODD.Timer.Benchmark -- 1 10000 rt
 
 这些数字只描述跑这条命令的那台机器（Windows 11 10.0.26200、16 核、.NET 10、控制台无其他负载）。换机器、换系统、加后台负载都必须重测，基准程序会把 Markdown 表格直接打印出来，贴到 README 或 issue 里就行。
 
-亚毫秒节拍的实测在 [docs/benchmarks.md](https://github.com/OODD-DevNet/OODD.Timer/blob/main/docs/benchmarks.md)。
-
 ---
 
 ## 快速开始
@@ -320,7 +318,7 @@ TimerStatistics st = timer.GetStatistics();
 timer.ResetStatistics();
 ```
 
-构造函数默认就会启动定时器，所以很多示例里再写一句 `timer.Start()` 是多余的——不过写着也不会出事，之前会（见[更新日志](https://github.com/OODD-DevNet/OODD.Timer/blob/main/docs/CHANGELOG.md)，1.0.0 修掉了重复入堆）。
+构造函数默认就会启动定时器，所以很多示例里再写一句 `timer.Start()` 是多余的——不过写着也不会出事，之前会出问题（重复入堆），1.0.0 已修掉。
 
 `TimerElapsedEventArgs.MissedTicks` 是过载信号，大于 0 表示这一拍之前有几个空拍被合并了。库不会补发。
 
@@ -524,7 +522,7 @@ dotnet run -c Release --project bench/OODD.Timer.Benchmark -- --gc-probe 2 0
 
 输出分别列出调度落点和**回调入口**迟到、GC 次数、漏拍和回调线程分配量；不能拿调度线程读时钟的时刻冒充控制代码已执行的时刻。NoGCRegion 被拒绝或提前结束也会如实输出。
 
-本机 1ms/Spin/Highest 的两轮对照中，每场景 2000 个回调间隔均为零分配，压力场景观测到实际 Gen0/Gen1 回收。NoGCRegion 成功保持无回收时，绑核场景的最坏入口迟到仍有 1.46–2.00ms；CPU 2 和 CPU 15 都没有比不绑定更准。这些反例和完整表格见 [实测数据](docs/benchmarks.md#110绑核与-gc-对照)，因此默认不绑核，也不承诺消除尾延迟。
+本机 1ms/Spin/Highest 的两轮对照中，每场景 2000 个回调间隔均为零分配，压力场景观测到实际 Gen0/Gen1 回收。NoGCRegion 成功保持无回收时，绑核场景的最坏入口迟到仍有 1.46–2.00ms；CPU 2 和 CPU 15 都没有比不绑定更准。因此默认不绑核，也不承诺消除尾延迟。
 
 ### 硬件时钟不是硬实时执行器
 
@@ -538,7 +536,7 @@ dotnet run -c Release --project bench/OODD.Timer.Benchmark -- --gc-probe 2 0
 4. 用 `WaitMode.Spin`，或者把 `SpinWindowNanoseconds` 设成 `MeasureKernelWakeLatency()` 的推荐值，别让窗口在运行中被尖峰撑大。
 5. 精度要求极高时，用 `HighResolutionScheduler` 单独起一个线程，只放这一两个定时器。
 
-详细做法、每一步的实测影响和代价在 [docs/进阶：把误差压到极限.md](https://github.com/OODD-DevNet/OODD.Timer/blob/main/docs/%E8%BF%9B%E9%98%B6%EF%BC%9A%E6%8A%8A%E8%AF%AF%E5%B7%AE%E5%8E%8B%E5%88%B0%E6%9E%81%E9%99%90.md)。
+这些手段的代价在本文开头的实测表里能看到：抬高调度线程优先级、把线程钉在某个核上，都能收紧尾延迟，代价是那个核的 CPU 占用被推向饱和。
 
 ---
 

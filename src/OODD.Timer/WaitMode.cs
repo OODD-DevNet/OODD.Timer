@@ -6,7 +6,7 @@ namespace OODD.Timer;
 /// <remarks>
 /// 三种策略构成一条"精度 ↔ CPU 占用"的取舍曲线，请根据节拍长短选择：
 /// <list type="table">
-/// <listheader><description>本机（Windows 11 / 16 核）实测，节拍 1ms × 10000 拍，完整数据见 docs/benchmarks.md。</description></listheader>
+/// <listheader><description>本机（Windows 11 / 16 核）实测，节拍 1ms × 10000 拍。</description></listheader>
 /// <item><term><see cref="Spin"/></term><description>每拍迟到 p50 低于 100ns 分辨率、p99 = 43µs；等待期间独占一个逻辑核 100%。</description></item>
 /// <item><term><see cref="Hybrid"/></term><description>每拍迟到 p50 低于 100ns、p99 = 45µs；CPU 占用 ≈ 自旋窗口 / 节拍。</description></item>
 /// <item><term><see cref="Kernel"/></term><description>每拍迟到 p50 = 37µs（绝对格点，不累加）；裸唤醒延迟 p50 ≈ 0.58ms。CPU ≈ 单核 2%。</description></item>

@@ -114,8 +114,6 @@ The `HighResolutionWait.Sleep(Kernel)` row is a bare, self-paced wait primitive:
 
 These numbers describe only the machine that ran this command (Windows 11 10.0.26200, 16 cores, .NET 10, a console run with no other load). You must remeasure on a different machine or operating system, or with background load. The benchmark prints Markdown tables directly, ready to paste into a README or issue.
 
-Measurements for sub-millisecond ticks are in [docs/benchmarks.md (in Chinese)](https://github.com/OODD-DevNet/OODD.Timer/blob/main/docs/benchmarks.md).
-
 ---
 
 ## Quick start
@@ -320,7 +318,7 @@ TimerStatistics st = timer.GetStatistics();
 timer.ResetStatistics();
 ```
 
-Constructors start timers by default, so the extra `timer.Start()` in many examples is redundant. It is harmless now, though it used to cause trouble (see the [changelog](https://github.com/OODD-DevNet/OODD.Timer/blob/main/docs/CHANGELOG.md): duplicate heap insertion was fixed in 1.0.0).
+Constructors start timers by default, so the extra `timer.Start()` in many examples is redundant. It is harmless now; the one time it did cause trouble (duplicate heap insertion) was fixed in 1.0.0.
 
 `TimerElapsedEventArgs.MissedTicks` is an overload signal: a value greater than 0 is the number of missed ticks coalesced before this tick. The library does not replay them.
 
@@ -524,7 +522,7 @@ dotnet run -c Release --project bench/OODD.Timer.Benchmark -- --gc-probe 2 0
 
 The output separately reports lateness at the scheduler's firing timestamp and at **callback entry**, GC counts, missed ticks, and allocations on the callback thread. A clock reading on the scheduler thread must not be presented as the time the control code actually began executing. Rejected or prematurely ended NoGCRegion requests are also reported.
 
-In two comparison rounds on this machine at 1ms/Spin/Highest, each scenario showed zero allocations across 2000 callback intervals, and actual Gen0/Gen1 collections were observed in the pressure scenarios. Even when NoGCRegion successfully prevented collections, the worst callback-entry lateness with affinity was still 1.46–2.00ms. Neither CPU 2 nor CPU 15 was more accurate than running without affinity. See the [measurements and complete tables (in Chinese)](https://github.com/OODD-DevNet/OODD.Timer/blob/main/docs/benchmarks.md#110绑核与-gc-对照) for these counterexamples. This is why affinity is not enabled by default and the library does not promise to eliminate tail latency.
+In two comparison rounds on this machine at 1ms/Spin/Highest, each scenario showed zero allocations across 2000 callback intervals, and actual Gen0/Gen1 collections were observed in the pressure scenarios. Even when NoGCRegion successfully prevented collections, the worst callback-entry lateness with affinity was still 1.46–2.00ms. Neither CPU 2 nor CPU 15 was more accurate than running without affinity. This is why affinity is not enabled by default and the library does not promise to eliminate tail latency.
 
 ### A hardware clock is not a hard real-time executor
 
@@ -538,7 +536,7 @@ Tuning options that can be combined, each requiring verification on the target m
 4. Use `WaitMode.Spin`, or set `SpinWindowNanoseconds` to the value recommended by `MeasureKernelWakeLatency()` so spikes do not inflate the window during operation.
 5. For extremely demanding accuracy requirements, create a separate thread with `HighResolutionScheduler` and put only those one or two timers on it.
 
-Detailed steps, measured effects, and trade-offs are in [docs/进阶：把误差压到极限.md (in Chinese)](https://github.com/OODD-DevNet/OODD.Timer/blob/main/docs/%E8%BF%9B%E9%98%B6%EF%BC%9A%E6%8A%8A%E8%AF%AF%E5%B7%AE%E5%8E%8B%E5%88%B0%E6%9E%81%E9%99%90.md).
+The trade-offs are visible in the benchmark table near the top of this document: raising scheduler priority and pinning a core tighten the tail, but push that core's CPU occupancy toward saturation.
 
 ---
 

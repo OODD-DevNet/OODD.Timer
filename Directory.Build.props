@@ -14,7 +14,7 @@
   </PropertyGroup>
 
   <!-- ========================== NuGet 元数据 ==========================
-       仓库地址集中在这里；README 与 CHANGELOG 里的链接也指向同一地址。
+       仓库地址集中在这里；README 里的链接也指向同一地址。
        仍可用 -p:OoddRepositoryUrl=... 在命令行覆盖（例如发布到镜像站时）。
   -->
   <PropertyGroup>
@@ -28,7 +28,7 @@
     <PackageProjectUrl>$(OoddRepositoryUrl)</PackageProjectUrl>
     <RepositoryUrl>$(OoddRepositoryUrl)</RepositoryUrl>
     <RepositoryBranch>main</RepositoryBranch>
-    <PackageReleaseNotes>$(OoddRepositoryUrl)/blob/main/docs/CHANGELOG.md</PackageReleaseNotes>
+    <PackageReleaseNotes>$(OoddRepositoryUrl)/releases</PackageReleaseNotes>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <IncludeSymbols>true</IncludeSymbols>

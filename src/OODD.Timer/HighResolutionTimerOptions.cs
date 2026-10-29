@@ -100,7 +100,7 @@ public sealed class HighResolutionTimerOptions
     /// <see cref="ThreadPriority.Normal"/> 是 9.90ms；p50/p95/p99 三者没有差别。
     /// 也就是说优先级改的是<b>最坏情况</b>，不是典型情况。
     /// 这也不是"实时优先级"——Windows 的 ThreadPriority 只映射到线程优先级类别，
-    /// 真正的 µs 级硬保证需要操作系统的实时调度（见 docs/进阶：把误差压到极限.md）。
+    /// 真正的 µs 级硬保证需要操作系统的实时调度，不是本库能提供的。
     /// </remarks>
     public ThreadPriority ThreadPriority { get; set; } = ThreadPriority.Highest;
 

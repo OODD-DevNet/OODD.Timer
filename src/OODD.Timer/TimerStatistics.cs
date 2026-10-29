@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Numerics;
 using System.Text;
 
 namespace OODD.Timer;
@@ -106,8 +105,8 @@ public readonly struct TimerStatistics
     /// <param name="percentile">0~1 之间，例如 0.99 表示 p99。</param>
     public double GetLatenessPercentile(double percentile)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(percentile);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(percentile, 1);
+        Guard.NotNegative(percentile, nameof(percentile));
+        Guard.NotGreaterThan(percentile, 1, nameof(percentile));
 
         if (LatenessBuckets is null or { Length: 0 } || TickCount == 0)
         {
@@ -213,7 +212,7 @@ internal sealed class LatencyCollector
     /// <summary>复位所有计数（保留桶数组长度，清零内容）。</summary>
     public void Reset()
     {
-        Array.Clear(_buckets);
+        Array.Clear(_buckets, 0, _buckets.Length);
         _sumLateness = _sumInterval = 0;
         _minLateness = _minInterval = double.MaxValue;
         _maxLateness = _maxInterval = 0;
@@ -318,6 +317,6 @@ internal sealed class LatencyCollector
         }
 
         ulong integral = (ulong)nanos;
-        return 64 - BitOperations.LeadingZeroCount(integral);
+        return MathCompat.Log2PlusOne(integral);
     }
 }

@@ -10,6 +10,8 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/OODD.Timer.Tests/OODD.Timer.Tests.csproj" />
+    <Project Path="tests/OODD.Timer.CompatSmoke/OODD.Timer.CompatSmoke.csproj" />
+    <Project Path="tests/OODD.Timer.CompatSmoke.NetStandard/OODD.Timer.CompatSmoke.NetStandard.csproj" />
   </Folder>
   <Folder Name="/bench/">
     <Project Path="bench/OODD.Timer.Benchmark/OODD.Timer.Benchmark.csproj" />

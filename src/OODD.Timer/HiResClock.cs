@@ -54,7 +54,7 @@ public static class HiResClock
     /// <summary>
     /// 取当前单调时钟时间戳。<b>单次调用在 x64 上约 15~25ns</b>，可以放在最紧的自旋循环里。
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(InlineHint.AggressiveInlining)]
     public static long Now() => Stopwatch.GetTimestamp();
 
     /// <summary>把 <see cref="TimeSpan"/> 换算成 tick 数，超出可表达范围时饱和到 <see cref="long.MaxValue"/>。</summary>
@@ -119,7 +119,7 @@ public static class HiResClock
 
     /// <summary>把 tick 差值换算成纳秒。</summary>
     /// <param name="ticks">tick 数（通常是两个时间戳之差）。</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(InlineHint.AggressiveInlining)]
     public static double ToNanoseconds(long ticks) => ticks * NanosecondsPerTick;
 
     /// <summary>把 tick 差值换算成整数纳秒（负数截断为 0）。</summary>
@@ -156,13 +156,13 @@ public static class HiResClock
 
     /// <summary>从 <paramref name="startingTimestamp"/> 起已经过去了多少纳秒。</summary>
     /// <param name="startingTimestamp">起点时间戳，一般来自 <see cref="Now"/>。</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(InlineHint.AggressiveInlining)]
     public static double ElapsedNanoseconds(long startingTimestamp) => ToNanoseconds(Now() - startingTimestamp);
 
     /// <summary>两个时间戳之间相差多少纳秒。</summary>
     /// <param name="startingTimestamp">起点时间戳。</param>
     /// <param name="endingTimestamp">终点时间戳。</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(InlineHint.AggressiveInlining)]
     public static double ElapsedNanoseconds(long startingTimestamp, long endingTimestamp) => ToNanoseconds(endingTimestamp - startingTimestamp);
 
     /// <summary>从 <paramref name="startingTimestamp"/> 起已经过去了多少秒。</summary>
@@ -198,12 +198,12 @@ public static class HiResClock
 
     /// <summary>按回绕安全的规则判断 <paramref name="deadlineTimestamp"/> 是否已经到期。</summary>
     /// <param name="deadlineTimestamp">目标到期时间戳。</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(InlineHint.AggressiveInlining)]
     public static bool IsDue(long deadlineTimestamp) => deadlineTimestamp - Now() <= 0;
 
     /// <summary>距离到期还差多少 tick；已到期返回 0。</summary>
     /// <param name="deadlineTimestamp">目标到期时间戳。</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(InlineHint.AggressiveInlining)]
     public static long Remaining(long deadlineTimestamp)
     {
         long remaining = deadlineTimestamp - Now();

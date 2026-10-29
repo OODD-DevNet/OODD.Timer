@@ -56,14 +56,13 @@ internal static class KernelWait
 
     static KernelWait()
     {
-        if (OperatingSystem.IsWindows())
+        if (Platform.IsWindows)
         {
             s_implementation = "Windows 高分辨率等待句柄 (CreateWaitableTimerExW)";
         }
-        else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || OperatingSystem.IsAndroid()
-                 || OperatingSystem.IsFreeBSD() || OperatingSystem.IsIOS() || OperatingSystem.IsTvOS() || OperatingSystem.IsWatchOS())
+        else if (Platform.IsPosixNanosleep)
         {
-            s_implementation = "POSIX nanosleep（经由 CoreCLR Thread.Sleep）";
+            s_implementation = "POSIX nanosleep（经由运行时 Thread.Sleep）";
         }
         else
         {
@@ -84,7 +83,7 @@ internal static class KernelWait
             return;
         }
 
-        if (OperatingSystem.IsWindows() && Volatile.Read(ref s_windowsHandleUnavailable) == 0 && SleepWindows(durationTicks))
+        if (Platform.IsWindows && Volatile.Read(ref s_windowsHandleUnavailable) == 0 && SleepWindows(durationTicks))
         {
             return;
         }

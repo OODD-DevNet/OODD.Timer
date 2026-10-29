@@ -78,7 +78,7 @@ public static class HighResolutionWait
     /// <summary>全程自旋到绝对到期时间戳——精度最高，等待期间占满一个逻辑核。</summary>
     /// <param name="deadlineTimestamp">绝对到期时间戳。</param>
     /// <remarks>等价于 <c>Until(deadlineTimestamp, WaitMode.Spin)</c>，热路径少一层分支。</remarks>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(InlineHint.AggressiveInlining)]
     public static void SpinUntil(long deadlineTimestamp) => WaitEngine.SpinTo(deadlineTimestamp, wake: null, CancellationToken.None);
 
     /// <summary>
@@ -97,12 +97,12 @@ public static class HighResolutionWait
     {
         if (cancellationToken.IsCancellationRequested)
         {
-            return Task.FromCanceled(cancellationToken);
+            return TaskCompat.FromCanceled(cancellationToken);
         }
 
         if (duration <= TimeSpan.Zero)
         {
-            return Task.CompletedTask;
+            return TaskCompat.CompletedTask;
         }
 
         return HighResolutionScheduler.Shared.SleepAsync(duration, mode, cancellationToken);
@@ -131,7 +131,7 @@ public static class HighResolutionWait
     /// <returns>唤醒延迟分布统计与推荐的自旋窗口。</returns>
     public static KernelWakeLatency MeasureKernelWakeLatency(int sampleCount = 300, TimeSpan? targetInterval = null, CancellationToken cancellationToken = default)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(sampleCount, 16);
+        Guard.NotLessThan(sampleCount, 16, nameof(sampleCount));
         TimeSpan target = targetInterval ?? TimeSpan.FromMilliseconds(1);
         long targetTicks = HiResClock.ToTicks(target);
 
@@ -272,7 +272,7 @@ internal sealed class AdaptiveSpinWindow
     {
         _floorTicks = HiResClock.ToTicks(Math.Max(floorNanoseconds, 1));
         _ceilingTicks = Math.Max(_floorTicks, HiResClock.ToTicks(Math.Max(ceilingNanoseconds, 1)));
-        _valueTicks = Math.Clamp(HiResClock.ToTicks(Math.Max(initialNanoseconds, 1)), _floorTicks, _ceilingTicks);
+        _valueTicks = MathCompat.Clamp(HiResClock.ToTicks(Math.Max(initialNanoseconds, 1)), _floorTicks, _ceilingTicks);
     }
 
     /// <summary>当前窗口长度（tick）。</summary>
@@ -514,7 +514,7 @@ public sealed record KernelWakeLatency(
         long[] sorted = (long[])samples.Clone();
         Array.Sort(sorted);
         int index = (int)Math.Round(percentile * (sorted.Length - 1), MidpointRounding.AwayFromZero);
-        return HiResClock.ToNanoseconds(sorted[Math.Clamp(index, 0, sorted.Length - 1)]);
+        return HiResClock.ToNanoseconds(sorted[MathCompat.Clamp(index, 0, sorted.Length - 1)]);
     }
 
     /// <summary>人类可读的一行摘要，适合直接写进启动日志。</summary>

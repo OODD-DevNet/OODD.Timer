@@ -33,8 +33,8 @@ public sealed record TimerPlatformInfo(
     /// <summary>采集当前进程的能力。开销极低（只读若干静态量），可以在启动时调用并写进日志。</summary>
     internal static TimerPlatformInfo Capture() =>
         new(
-            RuntimeInformation.OSDescription,
-            RuntimeInformation.OSArchitecture,
+            Platform.OsDescription,
+            Platform.OsArchitecture,
             Environment.Is64BitProcess,
             Environment.ProcessorCount,
             HiResClock.Frequency,
@@ -89,8 +89,20 @@ public static class RuntimeTuning
     /// </remarks>
     /// <param name="mode">要请求的模式，默认 <see cref="GCLatencyMode.SustainedLowLatency"/>。</param>
     /// <returns>释放时恢复原模式的 <see cref="IDisposable"/>；平台不允许设置时返回一个空操作对象。</returns>
-    public static IDisposable RequestGcLatencyMode(GCLatencyMode mode = GCLatencyMode.SustainedLowLatency)
+    public static IDisposable RequestGcLatencyMode(
+#if NET40
+        GCLatencyMode mode)
+#else
+        GCLatencyMode mode = GCLatencyMode.SustainedLowLatency)
+#endif
     {
+#if NET40
+        // .NET Framework 4.0 的 GCLatencyMode 里没有 SustainedLowLatency（4.5 才加入），
+        // 用 LowLatency 代替语义又完全不同（它禁止 gen2 回收、可能 OOM），所以这里明确拒绝而不是静默降级。
+        _ = mode;
+        throw new PlatformNotSupportedException(
+            "net40 的 GC 没有 SustainedLowLatency 模式；请改用 net45+ / netstandard2.0 目标，或关闭 PreferSustainedLowLatencyGc。");
+#else
         lock (s_gcGate)
         {
             if (s_gcRefCount == 0)
@@ -124,6 +136,7 @@ public static class RuntimeTuning
             s_gcRefCount++;
             return new GcScope();
         }
+#endif
     }
 
     private static readonly object s_gcGate = new();
@@ -170,7 +183,7 @@ public static class RuntimeTuning
     /// <returns>释放时（引用计数归零）恢复原节拍的 <see cref="IDisposable"/>。</returns>
     public static IDisposable RequestSystemTimerResolution(uint resolutionMs = 1)
     {
-        if (!OperatingSystem.IsWindows())
+        if (!Platform.IsWindows)
         {
             return NoOpScope.Instance;
         }

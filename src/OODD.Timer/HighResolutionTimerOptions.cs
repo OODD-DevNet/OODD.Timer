@@ -151,7 +151,7 @@ public sealed class HighResolutionTimerOptions
     /// <summary>校验配置，非法时抛 <see cref="ArgumentOutOfRangeException"/>。</summary>
     internal void Validate()
     {
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(Period, TimeSpan.Zero);
+        Guard.NotLessThanOrEqual(Period, TimeSpan.Zero, nameof(Period));
         if (DueTime is { } due && due < TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(DueTime), "首次延迟不能为负。");

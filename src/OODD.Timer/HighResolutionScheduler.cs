@@ -147,7 +147,11 @@ public sealed class HighResolutionScheduler : IDisposable
             _wake.Set();
         }
 
+#if NET40
+        if (Thread.CurrentThread.ManagedThreadId != _threadId && previous != 0)
+#else
         if (Environment.CurrentManagedThreadId != _threadId && previous != 0)
+#endif
         {
             _ = _thread.Join(TimeSpan.FromSeconds(2));
         }
@@ -254,7 +258,18 @@ public sealed class HighResolutionScheduler : IDisposable
         return CompleteAndDisposeAsync(timer.WaitForNextTickAsync(cancellationToken), timer);
     }
 
-    private static async Task CompleteAndDisposeAsync(Task<bool> wait, HighResolutionTimer timer)
+    private static Task CompleteAndDisposeAsync(Task<bool> wait, HighResolutionTimer timer)
+    {
+#if NET40
+        // 等价于下面对应的 async 版本（4.0 没有 async/await）：等完（无论成败）都要 Dispose。
+        return TaskCompat.Finally(wait, timer.Dispose);
+#else
+        return CompleteAndDisposeCoreAsync(wait, timer);
+#endif
+    }
+
+#if !NET40
+    private static async Task CompleteAndDisposeCoreAsync(Task<bool> wait, HighResolutionTimer timer)
     {
         try
         {
@@ -265,6 +280,7 @@ public sealed class HighResolutionScheduler : IDisposable
             timer.Dispose();
         }
     }
+#endif
 
     /// <summary>调度线程主循环。</summary>
     private void Run()

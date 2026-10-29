@@ -1,5 +1,7 @@
 namespace OODD.Timer;
 
+#if NET8_0_OR_GREATER
+
 /// <summary>
 /// 把高精度时钟/定时器接到 .NET 的 <see cref="TimeProvider"/> 抽象上。
 /// </summary>
@@ -14,6 +16,10 @@ namespace OODD.Timer;
 /// <para>
 /// 注意：日期与时区能力（<see cref="TimeProvider.GetUtcNow"/>、<see cref="TimeProvider.LocalTimeZone"/>）
 /// 仍然来自系统 wall-clock——本类不伪造日期，只有时间戳与定时器走高分辨率路径。
+/// </para>
+/// <para>
+/// 本类只在 net8.0+ 目标里存在：<see cref="TimeProvider"/> 是 .NET 8 才加入 BCL 的类型，
+/// net40 / netstandard2.0 上没有任何可对齐的抽象。
 /// </para>
 /// </remarks>
 /// <example>
@@ -64,7 +70,7 @@ public sealed class HighResolutionTimeProvider : TimeProvider
     /// <param name="period">周期；&lt;= 0 表示只触发一次。</param>
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
-        ArgumentNullException.ThrowIfNull(callback);
+        Guard.NotNull(callback, nameof(callback));
         return new HighResolutionProviderTimer(this, callback, state, dueTime, period);
     }
 
@@ -147,80 +153,4 @@ public sealed class HighResolutionTimeProvider : TimeProvider
     }
 }
 
-/// <summary>
-/// 常用入口的静态快捷方法。
-/// </summary>
-public static class HighResolutionTimers
-{
-    /// <summary>创建一个正在运行的周期定时器（零分配回调）。</summary>
-    /// <param name="period">周期。</param>
-    /// <param name="callback">每拍调用，在调度线程上执行。</param>
-    /// <param name="mode">等待策略。</param>
-    /// <returns>已启动的定时器；请自行 <see cref="HighResolutionTimer.Dispose"/>。</returns>
-    public static HighResolutionTimer Periodic(TimeSpan period, Action callback, WaitMode mode = WaitMode.Hybrid)
-    {
-        ArgumentNullException.ThrowIfNull(callback);
-        return new HighResolutionTimer(new HighResolutionTimerOptions
-        {
-            Period = period,
-            Mode = mode,
-            Callback = callback,
-        });
-    }
-
-    /// <summary>创建一个单次定时器。</summary>
-    /// <param name="delay">延迟时长。</param>
-    /// <param name="callback">到期回调。</param>
-    /// <param name="mode">等待策略。</param>
-    /// <returns>已启动的一次性定时器；触发后自动停表，仍需 <see cref="HighResolutionTimer.Dispose"/> 释放线程。</returns>
-    public static HighResolutionTimer Once(TimeSpan delay, Action callback, WaitMode mode = WaitMode.Hybrid)
-    {
-        ArgumentNullException.ThrowIfNull(callback);
-        return new HighResolutionTimer(new HighResolutionTimerOptions
-        {
-            Period = delay,
-            DueTime = delay,
-            AutoReset = false,
-            Mode = mode,
-            Callback = callback,
-        });
-    }
-
-    /// <summary>
-    /// 异步周期循环：<c>while (await timer.WaitForNextTickAsync(ct)) await body(ct)</c> 的封装，
-    /// 相当于高分辨率版 <see cref="System.Threading.PeriodicTimer"/>。
-    /// </summary>
-    /// <param name="period">周期。</param>
-    /// <param name="body">每拍执行的异步体。</param>
-    /// <param name="mode">等待策略。</param>
-    /// <param name="scheduler">共享调度器；null 表示本循环独占一个调度线程。</param>
-    /// <param name="cancellationToken">取消令牌。</param>
-    public static async Task RunPeriodicAsync(TimeSpan period, Func<CancellationToken, Task> body, WaitMode mode = WaitMode.Hybrid, HighResolutionScheduler? scheduler = null, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(body);
-        using HighResolutionTimer timer = new(new HighResolutionTimerOptions
-        {
-            Period = period,
-            Mode = mode,
-            Scheduler = scheduler,
-            AutoStart = false,
-        });
-
-        timer.Start();
-        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
-        {
-            await body(cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>
-    /// 高分辨率 <see cref="TimeProvider"/>，可直接注册进依赖注入容器替换默认的
-    /// <see cref="TimeProvider.System"/>。
-    /// </summary>
-    public static TimeProvider TimeProvider => HighResolutionTimeProvider.Instance;
-
-    /// <summary>精确睡眠（阻塞当前线程）。等价于 <see cref="HighResolutionWait.Sleep(TimeSpan, WaitMode)"/>。</summary>
-    /// <param name="duration">睡眠时长。</param>
-    /// <param name="mode">等待策略。</param>
-    public static void Sleep(TimeSpan duration, WaitMode mode = WaitMode.Hybrid) => HighResolutionWait.Sleep(duration, mode);
-}
+#endif

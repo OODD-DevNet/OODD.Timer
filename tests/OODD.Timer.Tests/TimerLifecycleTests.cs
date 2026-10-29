@@ -83,6 +83,31 @@ public class TimerLifecycleTests
     }
 
     [Fact]
+    public void Start_WhenAlreadyRunning_ReanchorsWithoutDoubleFiring()
+    {
+        using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+        {
+            Period = TimeSpan.FromMilliseconds(5),
+            Mode = WaitMode.Spin,
+            AutoStart = false,
+        });
+
+        long fired = 0;
+        timer.Elapsed += (_, _) => Interlocked.Increment(ref fired);
+
+        timer.Start();
+        timer.Start(); // 未 Stop 直接再 Start：重新锚定，不能在调度堆里留两份记录
+        Assert.Equal(TimerState.Running, timer.State);
+
+        // 100ms / 5ms ≈ 20 拍；若被重复入堆，会接近翻倍。
+        HighResolutionWait.Sleep(TimeSpan.FromMilliseconds(100), WaitMode.Kernel);
+        timer.Stop();
+
+        long count = Interlocked.Read(ref fired);
+        Assert.InRange(count, 10, 30);
+    }
+
+    [Fact]
     public void AutoResetFalse_FiresOnceAndStops()
     {
         using var timer = new HighResolutionTimer(new HighResolutionTimerOptions

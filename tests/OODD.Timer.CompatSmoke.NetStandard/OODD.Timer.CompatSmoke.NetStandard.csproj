@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- 直接引用 netstandard2.0 产物：NuGet 在 net48 上会优先选 net40 资产，
+         所以 netstandard2.0 资产必须单独打靶。两个 host 都跑一遍：
+         net48 验证 .NET Framework 4.8 上的加载/运行，net8.0 验证 CoreCLR 上的运行。 -->
+    <TargetFrameworks>net48;net8.0</TargetFrameworks>
+    <AssemblyName>OODD.Timer.CompatSmoke.NetStandard</AssemblyName>
+    <RootNamespace>OODD.Timer.CompatSmoke</RootNamespace>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <OoddIsTool>true</OoddIsTool>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\OODD.Timer.CompatSmoke\Program.cs" Link="Program.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="OODD.Timer">
+      <HintPath>..\..\src\OODD.Timer\bin\Release\netstandard2.0\OODD.Timer.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="$([MSBuild]::GetTargetFrameworkIdentifier('$(TargetFramework)')) == '.NETFramework'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

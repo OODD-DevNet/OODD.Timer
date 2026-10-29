@@ -6,7 +6,9 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <!-- net40 覆盖 .NET Framework 4.0~4.6.0（4.6.1+ 会优先取 netstandard2.0 资产），
+         netstandard2.0 覆盖 4.6.1+/Core 2.0+/Mono/Xamarin/Unity，net8+ 走原生高分辨率路径。 -->
+    <TargetFrameworks>net40;netstandard2.0;net8.0;net9.0;net10.0</TargetFrameworks>
     <RootNamespace>OODD.Timer</RootNamespace>
     <AssemblyName>OODD.Timer</AssemblyName>
   </PropertyGroup>
@@ -14,11 +16,39 @@
   <PropertyGroup>
     <!-- 等待引擎需要在最紧的循环里读时钟，禁止 JIT 引入额外边界检查 -->
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
-    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
-    <IsAotCompatible>true</IsAotCompatible>
     <!-- 公开的包必须带 XML 文档：IDE 智能提示与 NuGet 站点上的说明都来自它 -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0' or '$(TargetFramework)' == 'net9.0' or '$(TargetFramework)' == 'net10.0'">
+    <!-- Trim/AOT 分析器只对 net8+ 有意义，旧 TFM 上打开会报 NETSDK1210 -->
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net40'">
+    <!-- SDK 默认的隐式 using 含 System.Net.Http，而 .NET Framework 4.0 没有这个程序集，
+         一引入就会 CS0246；这里关掉隐式 using，改用下面的 <Using> 精确列出手上有的命名空间。 -->
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- net40 与 netstandard2.0 上没有 PeriodicTimer / RuntimeInformation / GCLatencyMode.SustainedLowLatency
+       等类型，XML 文档里的 <see cref> 因而解析不到。文档正文仍然有效，只是这些 TFM 不生成链接。 -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net40' or '$(TargetFramework)' == 'netstandard2.0'">
+    <NoWarn>$(NoWarn);CS1574;CS0419</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net40'">
+    <Using Include="System" />
+    <Using Include="System.Collections.Generic" />
+    <Using Include="System.Threading" />
+    <Using Include="System.Threading.Tasks" />
+  </ItemGroup>
+
+  <ItemGroup Condition="$([MSBuild]::GetTargetFrameworkIdentifier('$(TargetFramework)')) == '.NETFramework'">
+    <!-- SDK 不自带 .NET Framework 引用程序集；这个包只在编译期使用，不进 NuGet 依赖 -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />

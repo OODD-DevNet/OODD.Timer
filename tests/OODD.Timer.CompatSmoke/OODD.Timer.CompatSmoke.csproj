@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- 覆盖全部五个目标框架的资产：net40 / net48 走 net40 资产（NuGet 对 .NET Framework
+         优先选 net40 而不是 netstandard2.0），net8/9/10 走各自的原生资产。
+         netstandard2.0 资产由同级工程 OODD.Timer.CompatSmoke.NetStandard 单独打靶。 -->
+    <TargetFrameworks>net40;net48;net8.0;net9.0;net10.0</TargetFrameworks>
+    <AssemblyName>OODD.Timer.CompatSmoke</AssemblyName>
+    <RootNamespace>OODD.Timer.CompatSmoke</RootNamespace>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- 告诉 Directory.Build.targets 这是工具工程，不要生成 XML 文档 -->
+    <OoddIsTool>true</OoddIsTool>
+  </PropertyGroup>
+
+  <ItemGroup Condition="$([MSBuild]::GetTargetFrameworkIdentifier('$(TargetFramework)')) == '.NETFramework'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OODD.Timer\OODD.Timer.csproj" />
+  </ItemGroup>
+
+</Project>

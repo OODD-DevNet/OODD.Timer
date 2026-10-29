@@ -68,7 +68,11 @@ public sealed class HighResolutionTimer : IDisposable
     private readonly List<TaskCompletionSource<bool>> _waiters = new(2);
     private readonly HighResolutionTimerOptions _options;
     private readonly AdaptiveSpinWindow? _window;
+#if NET40
+    // net40 的 GC 没有 SustainedLowLatency（见 RuntimeTuning.RequestGcLatencyMode），不会持有作用域对象
+#else
     private readonly IDisposable? _gcScope;
+#endif
     private int _state;                                  // 对应 TimerState
     private long _lastDueTimestamp;
     private double _lastLatenessNanoseconds;
@@ -126,7 +130,7 @@ public sealed class HighResolutionTimer : IDisposable
     /// <exception cref="ArgumentOutOfRangeException">配置非法。</exception>
     public HighResolutionTimer(HighResolutionTimerOptions options)
     {
-        ArgumentNullException.ThrowIfNull(options);
+        Guard.NotNull(options, nameof(options));
         options.Validate();
         _options = options.Clone();
         Name = _options.Name ?? $"OODD.Timer.{Interlocked.Increment(ref s_timerCounter):D4}";
@@ -161,7 +165,12 @@ public sealed class HighResolutionTimer : IDisposable
 
         if (_options.PreferSustainedLowLatencyGc)
         {
+#if NET40
+            throw new PlatformNotSupportedException(
+                "net40 不支持 PreferSustainedLowLatencyGc：GC 没有 SustainedLowLatency 模式。");
+#else
             _gcScope = RuntimeTuning.RequestGcLatencyMode();
+#endif
         }
 
         if (_options.AutoStart)
@@ -196,7 +205,7 @@ public sealed class HighResolutionTimer : IDisposable
         get => _options.Period;
         set
         {
-            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(value, TimeSpan.Zero);
+            Guard.NotLessThanOrEqual(value, TimeSpan.Zero, nameof(value));
             _ = Change(value, value);
         }
     }
@@ -295,7 +304,7 @@ public sealed class HighResolutionTimer : IDisposable
     /// <exception cref="ObjectDisposedException">已释放。</exception>
     public void Start()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _state) == (int)TimerState.Disposed, this);
+        Guard.NotDisposed(Volatile.Read(ref _state) == (int)TimerState.Disposed, this);
 
         long dueTimeTicks;
         lock (_gate)
@@ -307,6 +316,10 @@ public sealed class HighResolutionTimer : IDisposable
         }
 
         long firstDue = HiResClock.Add(HiResClock.Now(), dueTimeTicks);
+
+        // 重新锚定相位：已经在跑时先摘掉旧记录。构造函数默认 AutoStart，用户再显式 Start() 一次很常见；
+        // 不先摘除就会在堆里留下两份记录——Debug 下断言失败，Release 下双倍触发。
+        _ = _scheduler.Disarm(this);
         _scheduler.Arm(this, Settings, firstDue);
         Volatile.Write(ref _state, (int)TimerState.Running);
     }
@@ -336,7 +349,7 @@ public sealed class HighResolutionTimer : IDisposable
     /// <returns><see langword="true"/> 表示定时器当前在调度中并已按新值调整；false 表示它未在运行（只更新了配置）。</returns>
     public bool Change(TimeSpan dueTime, TimeSpan period)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(dueTime, TimeSpan.Zero);
+        Guard.NotLessThan(dueTime, TimeSpan.Zero, nameof(dueTime));
 
         long periodTicks = period > TimeSpan.Zero ? Math.Max(1, HiResClock.ToTicks(period)) : 0;
         long newDue = HiResClock.Add(HiResClock.Now(), HiResClock.ToTicks(dueTime));
@@ -411,7 +424,7 @@ public sealed class HighResolutionTimer : IDisposable
     /// <exception cref="ArgumentOutOfRangeException">不是有限正数。</exception>
     public void SetPeriod(double periodMilliseconds)
     {
-        if (!double.IsFinite(periodMilliseconds) || periodMilliseconds <= 0)
+        if (!MathCompat.IsFinite(periodMilliseconds) || periodMilliseconds <= 0)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(periodMilliseconds),
@@ -487,15 +500,34 @@ public sealed class HighResolutionTimer : IDisposable
     /// <exception cref="ObjectDisposedException">定时器已释放。</exception>
     /// <exception cref="InvalidOperationException">定时器未在运行。</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> 被取消。</exception>
-    public async Task WaitForTriggerAsync(CancellationToken cancellationToken = default)
+    public Task WaitForTriggerAsync(CancellationToken cancellationToken = default)
     {
         EnsureRunning();
-        if (!await WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+        Task<bool> wait = WaitForNextTickAsync(cancellationToken);
+#if NET40
+        return TaskCompat.Then(wait, tick =>
+        {
+            if (!tick)
+            {
+                // 等待期间被 Dispose：WaitForNextTickAsync 以 false 结束。
+                Guard.NotDisposed(Volatile.Read(ref _state) == (int)TimerState.Disposed, this);
+            }
+        });
+#else
+        return WaitForTriggerCoreAsync(wait);
+#endif
+    }
+
+#if !NET40
+    private async Task WaitForTriggerCoreAsync(Task<bool> wait)
+    {
+        if (!await wait.ConfigureAwait(false))
         {
             // 等待期间被 Dispose：WaitForNextTickAsync 以 false 结束。
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref _state) == (int)TimerState.Disposed, this);
+            Guard.NotDisposed(Volatile.Read(ref _state) == (int)TimerState.Disposed, this);
         }
     }
+#endif
 
     /// <summary>拉模式的公共实现：<see cref="SequenceField"/> 变化是唯一交付判据，返回即"观察到一次新的触发"。</summary>
     private void PullTick(TimeSpan spinWindow)
@@ -508,7 +540,7 @@ public sealed class HighResolutionTimer : IDisposable
         {
             // 只先复核"已释放"；"已停止"要等检查完序列号再说：单次定时器触发后调度线程会立刻
             // 把状态置成 Stopped，若先查状态，等待者会在"这一拍其实已经交付"的情况下误抛。
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref _state) == (int)TimerState.Disposed, this);
+            Guard.NotDisposed(Volatile.Read(ref _state) == (int)TimerState.Disposed, this);
 
             long current = Volatile.Read(ref SequenceField);
             if (current != observed)
@@ -658,7 +690,7 @@ public sealed class HighResolutionTimer : IDisposable
     /// <summary>每轮等待前复核状态：已释放抛 <see cref="ObjectDisposedException"/>，未运行抛 <see cref="InvalidOperationException"/>。</summary>
     private void EnsureRunning()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _state) == (int)TimerState.Disposed, this);
+        Guard.NotDisposed(Volatile.Read(ref _state) == (int)TimerState.Disposed, this);
         if (Volatile.Read(ref _state) != (int)TimerState.Running)
         {
             throw new InvalidOperationException($"定时器 {Name} 未在运行，请先调用 {nameof(Start)}()。");
@@ -683,7 +715,7 @@ public sealed class HighResolutionTimer : IDisposable
     /// <exception cref="ArgumentOutOfRangeException">小于 -1。</exception>
     public bool WaitOne(int millisecondsTimeout)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, System.Threading.Timeout.Infinite);
+        Guard.NotLessThan(millisecondsTimeout, System.Threading.Timeout.Infinite, nameof(millisecondsTimeout));
 
         try
         {
@@ -715,28 +747,62 @@ public sealed class HighResolutionTimer : IDisposable
     /// 要在那个时刻的亚微秒精度上做决定，请用 <see cref="Elapsed"/> 内联回调。
     /// </remarks>
     /// <param name="cancellationToken">取消令牌；取消时任务以 <see cref="OperationCanceledException"/> 结束。</param>
-    public async Task<bool> WaitForNextTickAsync(CancellationToken cancellationToken = default)
+    public Task<bool> WaitForNextTickAsync(CancellationToken cancellationToken = default)
     {
-        TaskCompletionSource<bool> source = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<bool> source = TaskCompat.CreateBooleanSource();
         lock (_waiters)
         {
             if (Volatile.Read(ref _state) == (int)TimerState.Disposed)
             {
-                return false;
+                return TaskCompat.FromResult(false);
             }
 
             _waiters.Add(source);
         }
 
+        if (!cancellationToken.CanBeCanceled)
+        {
+            // 没有令牌时省掉一次 CancellationTokenSource 注册分配。
+            return source.Task;
+        }
+
+        return WaitForNextTickCoreAsync(source, cancellationToken);
+    }
+
+#if NET40
+    // .NET 4.0 没有 async/await（编译器需要的 AsyncTaskMethodBuilder 从 4.5 才进入 mscorlib），
+    // 这里用 TCS + 取消注册手工表达同一语义：取消时把自己从等待队列摘掉，再让任务以“已取消”结束。
+    private Task<bool> WaitForNextTickCoreAsync(TaskCompletionSource<bool> source, CancellationToken cancellationToken)
+    {
+        CancellationTokenRegistration registration = CancellationCompat.Register(
+            state =>
+            {
+                TaskCompletionSource<bool> waiter = (TaskCompletionSource<bool>)state!;
+                lock (_waiters)
+                {
+                    _ = _waiters.Remove(waiter);
+                }
+
+                _ = waiter.TrySetCanceled();
+            },
+            source,
+            cancellationToken);
+
+        // 任务结束时注销注册，避免令牌源长期持有回调。
+        _ = source.Task.ContinueWith(
+            _ => registration.Dispose(),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        return source.Task;
+    }
+#else
+    private async Task<bool> WaitForNextTickCoreAsync(TaskCompletionSource<bool> source, CancellationToken cancellationToken)
+    {
         try
         {
-            if (!cancellationToken.CanBeCanceled)
-            {
-                // 没有令牌时省掉一次 CancellationTokenSource 注册分配。
-                return await source.Task.ConfigureAwait(false);
-            }
-
-            using (cancellationToken.UnsafeRegister(static state => ((TaskCompletionSource<bool>)state!).TrySetCanceled(), source))
+            using (CancellationCompat.Register(static state => ((TaskCompletionSource<bool>)state!).TrySetCanceled(), source, cancellationToken))
             {
                 return await source.Task.ConfigureAwait(false);
             }
@@ -752,6 +818,7 @@ public sealed class HighResolutionTimer : IDisposable
             return false;
         }
     }
+#endif
 
     /// <summary>取当前精度统计快照（含迟到量对数直方图）。</summary>
     public TimerStatistics GetStatistics()
@@ -787,7 +854,9 @@ public sealed class HighResolutionTimer : IDisposable
 
         _ = _scheduler.Disarm(this);
         CompleteWaiters(completed: false);
+#if !NET40
         _gcScope?.Dispose();
+#endif
 
         if (_ownsScheduler)
         {
@@ -798,7 +867,7 @@ public sealed class HighResolutionTimer : IDisposable
     }
 
     /// <inheritdoc />
-    public override string ToString() => $"{Name}: period={Period.TotalMicroseconds:F1}us mode={Mode} state={State}";
+    public override string ToString() => $"{Name}: period={MathCompat.TotalMicroseconds(Period):F1}us mode={Mode} state={State}";
 
     // ============================ 与调度线程的契约（internal） ============================
 
@@ -952,9 +1021,24 @@ public sealed class HighResolutionTimer : IDisposable
             _waiters.Clear();
         }
 
+#if NET40
+        // .NET 4.0 的 TCS 没有 RunContinuationsAsynchronously：把完成动作丢到线程池，
+        // 避免消费者的续体在调度线程上内联执行（那会推迟同一调度器上的其它定时器）。
+        _ = ThreadPool.QueueUserWorkItem(
+            state =>
+            {
+                TaskCompletionSource<bool>[] waiters = (TaskCompletionSource<bool>[])state!;
+                foreach (TaskCompletionSource<bool> waiter in waiters)
+                {
+                    _ = waiter.TrySetResult(completed);
+                }
+            },
+            snapshot);
+#else
         foreach (TaskCompletionSource<bool> source in snapshot)
         {
             _ = source.TrySetResult(completed);
         }
+#endif
     }
 }

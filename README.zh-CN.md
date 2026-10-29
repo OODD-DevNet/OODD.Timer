@@ -26,6 +26,7 @@ OODD.Timer 的做法是把计时和等待都换掉。计时读 `Stopwatch.GetTim
 - [三种等待模式怎么选](#三种等待模式怎么选)
 - [拉模式：同步/异步等下一拍](#拉模式同步异步等下一拍)
 - [API 导览](#api-导览)
+- [1.2 新增 API](#12-新增-api)
 - [精度的天花板在哪里](#精度的天花板在哪里)
 - [把尾延迟压下去：进程级调优](#把尾延迟压下去进程级调优)
 - [用法陷阱](#用法陷阱)
@@ -371,6 +372,49 @@ bool healthy = st.JitterRatio < 0.05 && st.MissedTicks == 0;
 ```
 
 直方图用 2 的幂分桶，64 个桶，桶宽就是误差量级，所以报出来的分位数是保守偏大的——宁可高估误差，也不低估。
+
+---
+
+## 1.2 新增 API
+
+1.2 版在 1.1 的核心之上补了几项表层能力，都不改变默认精度路径。下列每一项都有测试覆盖（net8.0 / net10.0 共 142 项测试全绿）。
+
+- **`await using`（`IAsyncDisposable`）**：`HighResolutionTimer`、`HighResolutionScheduler`、`HighResolutionSchedulerPool`（net8.0+）。定时器独占调度器时，`DisposeAsync` 会 `await` 该线程干净退出而不阻塞线程池线程；共享调度器只把本定时器摘掉，与同步 `Dispose` 语义一致。
+- **`TimerStatistics.ToCsv()` / `ToJson()`**：机器可读的标量指标（不变文化；CSV 带表头、JSON 可被 `JsonDocument` 解析；`_ns` 结尾字段为纳秒）。
+- **`JitterNanoseconds`**：每拍在到期点叠加 `[0, JitterNanoseconds]` 随机偏移，用于防惊群。默认 `0` 严格保持 `首拍 + n×周期` 的无漂移格点；开启即主动放弃该不变量（这正是抖动目的）。偏移非负，故 `LatenessNanoseconds` 仍只反映相对本拍到期点的迟到。必须小于一个周期。
+- **`OffloadCallback`**：把回调/事件投递到线程池，调度线程立即回去等下一拍。单条在飞的反压：上一条还在执行时，新到期的一拍被丢弃并计入 `HighResolutionTimer.OffloadedCallbackDrops`（绝不无界排队）。这是用回调投递精度换不阻塞，请想清楚再开。
+- **`HighResolutionTimers.At(DateTimeOffset, Action, WaitMode)`**：按 wall-clock 绝对时刻触发一次（内部换算成相对延迟，再由单调时钟驱动）。过去/此刻钳到尽快触发。
+- **`HighResolutionSchedulerPool`**：持有 N 个调度器，用 `Next()`（轮询）或 `LeastLoaded()` 把定时器摊到多个线程，另有索引器与 `CreateTimer(...)`。适合"回调不极短且数量多"，用多核并行触发替代单线程串行。
+- **`VirtualTimeProvider`**（net8.0+）：面向测试的确定性 `TimeProvider`：`Advance(TimeSpan)` / `AdvanceTo(long)` 拨动虚拟时钟并按序同步触发到期回调。它**不驱动**真实 `HighResolutionTimer`——要真实低延迟触发用 `HighResolutionTimeProvider`，要单元测试不真等用 `VirtualTimeProvider`。
+
+```csharp
+using OODD.Timer;
+
+// await using + 零分配回调，随后导出指标
+await using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+{
+    Period = TimeSpan.FromMilliseconds(1),
+    Callback = Sample,                 // 在调度线程执行、零分配
+    JitterNanoseconds = 50_000,        // 到期点最多散开 50us（防惊群）
+});
+
+Console.WriteLine(timer.GetStatistics().ToCsv());
+Console.WriteLine(timer.GetStatistics().ToJson());
+
+// 多个非极短回调：摊到 4 个调度线程
+await using var pool = new HighResolutionSchedulerPool(4);
+for (int i = 0; i < 32; i++)
+    pool.CreateTimer(TimeSpan.FromMilliseconds(5), OnTick, WaitMode.Hybrid);
+
+// 绝对时刻一次性触发
+using var once = HighResolutionTimers.At(DateTimeOffset.UtcNow.AddSeconds(3), () => Console.WriteLine("three seconds from now"));
+
+// 测试用的确定性虚拟时钟
+var clock = new VirtualTimeProvider();
+using var parked = clock.CreateTimer(_ => Console.WriteLine("tick"), null,
+    TimeSpan.FromSeconds(30), Timeout.InfiniteTimeSpan);
+clock.Advance(TimeSpan.FromSeconds(30));    // 立即触发，不真等
+```
 
 ---
 

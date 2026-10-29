@@ -169,6 +169,42 @@ public sealed class HighResolutionTimerOptions
     /// </remarks>
     public bool PreferSustainedLowLatencyGc { get; set; }
 
+    /// <summary>
+    /// 每拍在到期点上叠加的随机抖动上限（纳秒）。默认 0，即严格的无漂移格点。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 用途是<b>防惊群</b>：很多设备/进程在同一个整秒或同一个周期点唤醒会互相抢占，
+    /// 给每拍的到期点加一个 <c>[0, JitterNanoseconds]</c> 的随机偏移可以把唤醒时刻散开。
+    /// </para>
+    /// <para>
+    /// 代价：开启后<b>主动放弃</b>“到期点恒等于首拍 + n×周期”这条无漂移不变量——这正是抖动要做的事。
+    /// 抖动只会让到期点更晚（非负），因此 <see cref="TimerElapsedEventArgs.LatenessNanoseconds"/>
+    /// 仍然只反映“相对本拍到期点的触发精度”，不会为负。相邻两拍的应到间隔落在
+    /// <c>[周期, 周期 + JitterNanoseconds]</c>。默认 0 时行为与不设抖动完全一致。
+    /// </para>
+    /// <para>必须小于一个周期，否则抖动可能盖过周期本身、让语义退化。</para>
+    /// </remarks>
+    public double JitterNanoseconds { get; set; }
+
+    /// <summary>
+    /// 是否把回调/事件投递到线程池执行，让调度线程立即回到等待下一拍。默认 <see langword="false"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>这是精度换吞吐的取舍，请想清楚再用。</b>关掉时（默认）回调就在调度线程、恰好在到期点执行，
+    /// 是精度最高的路径。开启后回调挪到线程池线程，其执行时刻多了线程池排队延迟（几十µs到ms级），
+    /// <see cref="HighResolutionTimer"/> 的到期记账和 <see cref="TimerElapsedEventArgs.LatenessNanoseconds"/>
+    /// 仍在调度线程上照常统计，但“你的代码真正跑起来”不再精确对齐到期点。
+    /// </para>
+    /// <para>
+    /// 适合“回调本身就慢，不想让一个慢回调把同一调度器上的兄弟定时器一起拖迟”的场景。
+    /// 反压策略固定为<b>单条在飞</b>：上一段卸载的回调还没跑完时，新到期的一拍不再排队，
+    /// 而是被丢弃并计入 <see cref="HighResolutionTimer.OffloadedCallbackDrops"/>（绝不无界堆积）。
+    /// </para>
+    /// </remarks>
+    public bool OffloadCallback { get; set; }
+
     /// <summary>校验配置，非法时抛 <see cref="ArgumentOutOfRangeException"/>。</summary>
     internal void Validate()
     {
@@ -198,6 +234,17 @@ public sealed class HighResolutionTimerOptions
         {
             throw new ArgumentOutOfRangeException(nameof(CoarseChunkMilliseconds), "粗等待分段长度必须大于 0。");
         }
+
+        Guard.NotNegative(JitterNanoseconds, nameof(JitterNanoseconds));
+        if (!MathCompat.IsFinite(JitterNanoseconds))
+        {
+            throw new ArgumentOutOfRangeException(nameof(JitterNanoseconds), JitterNanoseconds, "抖动必须是有限非负数。");
+        }
+
+        if (JitterNanoseconds >= Period.Ticks * 100.0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(JitterNanoseconds), JitterNanoseconds, "抖动上限必须小于一个周期。");
+        }
     }
 
     /// <summary>把当前配置克隆一份（防止调用方复用同一个 options 对象时被相互影响）。</summary>
@@ -221,6 +268,8 @@ public sealed class HighResolutionTimerOptions
         Callback = Callback,
         SuppressCallbackExceptions = SuppressCallbackExceptions,
         PreferSustainedLowLatencyGc = PreferSustainedLowLatencyGc,
+        JitterNanoseconds = JitterNanoseconds,
+        OffloadCallback = OffloadCallback,
     };
 }
 

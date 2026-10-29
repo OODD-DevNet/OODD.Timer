@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # 跨平台跑 xUnit 测试矩阵（net8.0 / net10.0）。
+  test:
+    name: Test (net8 + net10)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Test
+        run: dotnet test tests/OODD.Timer.Tests/OODD.Timer.Tests.csproj -c Release --verbosity minimal
+
+  # Windows 上编译全部 5 个目标框架，并运行 .NET Framework 4.8 兼容冒烟程序。
+  # 只在 Windows 做：net40 需要 .NET Framework 参考程序集与本机运行时。
+  legacy-multitarget:
+    name: Multi-target build + compat smoke (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Build library (net40;netstandard2.0;net8.0;net9.0;net10.0)
+        run: dotnet build src/OODD.Timer/OODD.Timer.csproj -c Release --verbosity minimal
+      - name: Build compat smoke projects (all TFMs)
+        run: |
+          dotnet build tests/OODD.Timer.CompatSmoke/OODD.Timer.CompatSmoke.csproj -c Release --verbosity minimal
+          dotnet build tests/OODD.Timer.CompatSmoke.NetStandard/OODD.Timer.CompatSmoke.NetStandard.csproj -c Release --verbosity minimal
+      - name: Run .NET Framework 4.8 compat smoke
+        run: .\tests\OODD.Timer.CompatSmoke\bin\Release\net48\OODD.Timer.CompatSmoke.exe
+
+  # 裁剪 + NativeAOT：证明库在 ILLink full 模式下无告警，且原生编译产物能跑。
+  # AOT 需要 clang：GitHub ubuntu 镜像自带；若缺则在此显式安装。
+  trim-aot:
+    name: Trim + NativeAOT (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Ensure clang for NativeAOT
+        run: |
+          if ! command -v clang >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+          fi
+      - name: Publish trimmed (self-contained linux-x64) and fail on any IL warning
+        working-directory: tests/OODD.Timer.CompatSmoke
+        run: |
+          set -o pipefail
+          dotnet publish -c Release -f net8.0 -r linux-x64 --self-contained true \
+            -p:PublishTrimmed=true -p:TrimMode=full 2>&1 | tee trim.log
+          if grep -Eiq "warning IL[0-9]+" trim.log; then
+            echo "::error::trimming produced IL warnings"
+            grep -Ei "warning IL[0-9]+" trim.log
+            exit 1
+          fi
+      - name: Publish NativeAOT (linux-x64) and run the native binary
+        working-directory: tests/OODD.Timer.CompatSmoke
+        run: |
+          set -o pipefail
+          dotnet publish -c Release -f net8.0 -r linux-x64 --self-contained true \
+            -p:PublishAot=true 2>&1 | tee aot.log
+          if grep -Eiq "warning IL[0-9]+" aot.log; then
+            echo "::error::AOT produced IL warnings"
+            grep -Ei "warning IL[0-9]+" aot.log
+            exit 1
+          fi
+          ./bin/Release/net8.0/linux-x64/publish/OODD.Timer.CompatSmoke

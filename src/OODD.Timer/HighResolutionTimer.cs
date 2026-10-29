@@ -48,6 +48,9 @@ namespace OODD.Timer;
 /// </code>
 /// </example>
 public sealed class HighResolutionTimer : IDisposable
+#if NET8_0_OR_GREATER
+    , IAsyncDisposable
+#endif
 {
     private static int s_timerCounter;
 
@@ -81,6 +84,10 @@ public sealed class HighResolutionTimer : IDisposable
     private long _pulledDueTimestamp;                    // 已交付那一拍的应到时刻（消费者自己的光标）
     private long _pullSpinWindowTicks;                   // 拉模式实测到的内核唤醒迟到（只增不减，含 25% 余量）
     private long _pullWindowFloorTicks;                  // 调用方给的自旋窗口下限
+    private readonly long _jitterTicks;                  // 每拍随机抖动的上限（tick）；0 表示严格无漂移格点
+    private readonly Random? _jitterRandom;              // 仅在抖动>0 时创建；只有调度线程读取，无需加锁
+    private int _offloadInFlight;                        // 卸载模式下“回调是否在飞”：0=空闲 1=在飞
+    private long _offloadDrops;                          // 因上一条卸载回调未完而被丢弃的拍数
 
     /// <summary>用默认配置（1ms 周期、<see cref="WaitMode.Hybrid"/>、自动启动）创建定时器。</summary>
     public HighResolutionTimer() : this(new HighResolutionTimerOptions())
@@ -136,6 +143,12 @@ public sealed class HighResolutionTimer : IDisposable
         Name = _options.Name ?? $"OODD.Timer.{Interlocked.Increment(ref s_timerCounter):D4}";
         PeriodTicks = Math.Max(1, HiResClock.ToTicks(_options.Period));
         _autoResetFlag = _options.AutoReset;
+
+        if (_options.JitterNanoseconds > 0)
+        {
+            _jitterTicks = HiResClock.ToTicks(_options.JitterNanoseconds);
+            _jitterRandom = new Random();
+        }
 
         if (_options.Mode == WaitMode.Hybrid && _options.AdaptiveSpinWindow)
         {
@@ -295,6 +308,12 @@ public sealed class HighResolutionTimer : IDisposable
 
     /// <summary>最近一拍的应到时间戳。</summary>
     public long LastDueTimestamp => Volatile.Read(ref _lastDueTimestamp);
+
+    /// <summary>
+    /// 卸载模式（<see cref="HighResolutionTimerOptions.OffloadCallback"/>）下，因上一条回调仍在执行而被丢弃的拍数。
+    /// 非卸载模式恒为 0。
+    /// </summary>
+    public long OffloadedCallbackDrops => Volatile.Read(ref _offloadDrops);
 
     /// <summary>
     /// 每次到期触发。回调在调度线程上执行，<b>必须极短</b>（微秒级）；稍重的活儿请自己丢线程池。
@@ -877,6 +896,50 @@ public sealed class HighResolutionTimer : IDisposable
         _tickEvent.Dispose();
     }
 
+#if NET8_0_OR_GREATER
+    /// <summary>
+    /// 异步释放：停表并解除调度，等待自己独占的调度线程干净退出，不阻塞调用线程池线程。
+    /// </summary>
+    /// <remarks>
+    /// 共享调度器（<see cref="HighResolutionTimerOptions.Scheduler"/> 非空）时不会等待线程退出——那个线程属于别人——
+    /// 只把本定时器摘掉；语义与同步 <see cref="Dispose"/> 一致。
+    /// </remarks>
+    public ValueTask DisposeAsync()
+    {
+        int previous = Interlocked.Exchange(ref _state, (int)TimerState.Disposed);
+        if (previous == (int)TimerState.Disposed)
+        {
+            return default;
+        }
+
+        _ = _scheduler.Disarm(this);
+        CompleteWaiters(completed: false);
+        _gcScope?.Dispose();
+
+        if (_ownsScheduler)
+        {
+            // 先等调度线程退出再释放事件句柄，复刻同步 Dispose“先 Join 再 Dispose”的顺序，
+            // 避免在飞的 FireCore 与 _tickEvent.Dispose() 竞争。
+            return DisposeAsyncCore(_scheduler.DisposeAsyncCore());
+        }
+
+        _tickEvent.Dispose();
+        return default;
+    }
+
+    private async ValueTask DisposeAsyncCore(ValueTask schedulerExit)
+    {
+        try
+        {
+            await schedulerExit.ConfigureAwait(false);
+        }
+        finally
+        {
+            _tickEvent.Dispose();
+        }
+    }
+#endif
+
     /// <inheritdoc />
     public override string ToString() => $"{Name}: period={MathCompat.TotalMicroseconds(Period):F1}us mode={Mode} state={State}";
 
@@ -920,6 +983,79 @@ public sealed class HighResolutionTimer : IDisposable
         LastFiredTimestamp = 0;
     }
 
+    /// <summary>
+    /// 取下一拍到期点要叠加的随机抖动（tick），落在 <c>[0, _jitterTicks]</c>。
+    /// 未配置抖动时返回 0（走无漂移格点原路径）。只有调度线程在 <see cref="HighResolutionScheduler.FireOne"/> 内调用。
+    /// </summary>
+    internal long NextJitterTicks()
+    {
+        Random? random = _jitterRandom;
+        if (random is null || _jitterTicks <= 0)
+        {
+            return 0;
+        }
+
+        // NextInt64 在 net40/netstandard2.0 不一定存在，用 NextDouble 缩放，范围语义一致。
+        return (long)(random.NextDouble() * _jitterTicks);
+    }
+
+    /// <summary>卸载模式：把回调投递到线程池，调度线程立即返回；上一条在飞则丢弃本拍并计数。</summary>
+    private void OffloadDispatch(Action? callback, TimerElapsedEventArgs? args, long sequence)
+    {
+        if (Interlocked.CompareExchange(ref _offloadInFlight, 1, 0) != 0)
+        {
+            _ = Interlocked.Increment(ref _offloadDrops);
+            return;
+        }
+
+        OffloadWork work = new(this, callback, Elapsed, args, sequence);
+        ThreadPool.QueueUserWorkItem(static state => ((OffloadWork)state!).Run(), work);
+    }
+
+    private sealed class OffloadWork
+    {
+        private readonly HighResolutionTimer _timer;
+        private readonly Action? _callback;
+        private readonly EventHandler<TimerElapsedEventArgs>? _handlers;
+        private readonly TimerElapsedEventArgs? _args;
+        private readonly long _sequence;
+
+        public OffloadWork(HighResolutionTimer timer, Action? callback, EventHandler<TimerElapsedEventArgs>? handlers, TimerElapsedEventArgs? args, long sequence)
+        {
+            _timer = timer;
+            _callback = callback;
+            _handlers = handlers;
+            _args = args;
+            _sequence = sequence;
+        }
+
+        public void Run()
+        {
+            try
+            {
+                // 已释放则不再执行回调，避免停表后仍投递到用户代码。
+                if (Volatile.Read(ref _timer._state) == (int)TimerState.Disposed)
+                {
+                    return;
+                }
+
+                if (_callback is not null)
+                {
+                    _timer.InvokeCallback(_callback, _sequence);
+                }
+
+                if (_handlers is not null && _args is not null)
+                {
+                    _timer.InvokeHandlers(_handlers, _args, _sequence);
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _timer._offloadInFlight, 0);
+            }
+        }
+    }
+
     /// <summary>由调度线程在触发一拍时调用：记统计、发事件、通知异步等待者。</summary>
     [System.Runtime.CompilerServices.MethodImpl(JitHints.AggressiveOptimization)]
     internal void FireCore(long dueTimestamp, long firedTimestamp, double latenessNanos, int missedTicks)
@@ -947,6 +1083,17 @@ public sealed class HighResolutionTimer : IDisposable
         }
 
         _tickEvent.Set();
+
+        if (_options.OffloadCallback)
+        {
+            // 卸载模式：在调度线程上只构造事件参数快照（若有订阅者），真正的执行挪到线程池，
+            // 调度线程立即回去等下一拍。单条在飞，超额丢弃。
+            TimerElapsedEventArgs? args = handlers is not null
+                ? new(this, dueTimestamp, firedTimestamp, PeriodTicks, sequence, missedTicks, previousFired)
+                : null;
+            OffloadDispatch(callback, args, sequence);
+            return;
+        }
 
         if (callback is not null)
         {

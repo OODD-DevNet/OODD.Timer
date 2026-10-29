@@ -32,6 +32,9 @@ namespace OODD.Timer;
 /// </code>
 /// </example>
 public sealed class HighResolutionScheduler : IDisposable
+#if NET8_0_OR_GREATER
+    , IAsyncDisposable
+#endif
 {
     /// <summary>
     /// 全进程共享的调度器（线程懒创建，永不主动释放）。
@@ -59,6 +62,11 @@ public sealed class HighResolutionScheduler : IDisposable
     private readonly object _startupGate = new();
     private bool _affinityInitialized;
     private Exception? _startupError;
+#if NET8_0_OR_GREATER
+    // 调度线程真正退出时完成（Run 的 finally），供 DisposeAsync 不阻塞地 await；
+    // 仅 net8+ 的 IAsyncDisposable 路径会读它，老框架不创建。
+    private readonly TaskCompletionSource _exitSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+#endif
 
     /// <summary>
     /// 创建调度器。此时还没有创建线程，第一个定时器挂载时才创建。
@@ -161,7 +169,40 @@ public sealed class HighResolutionScheduler : IDisposable
         }
 
         Interlocked.Exchange(ref _state, 3);
+#if NET8_0_OR_GREATER
+        // 线程从未启动（Run 的 finally 不会执行）时，同步释放也要完成退出信号，
+        // 否则之后 DisposeAsync 会 await 一个永不完成的任务。Run 正常退出时再 TrySetResult 是幂等的。
+        _exitSignal.TrySetResult();
+#endif
     }
+
+#if NET8_0_OR_GREATER
+    /// <summary>异步释放：请求调度线程停止并 await 它干净退出，不阻塞调用线程。</summary>
+    public ValueTask DisposeAsync() => DisposeAsyncCore();
+
+    internal ValueTask DisposeAsyncCore()
+    {
+        int previous = Interlocked.Exchange(ref _state, 2);
+        if (previous < 2)
+        {
+            lock (_gate)
+            {
+                _wake.Set();
+            }
+
+            // 线程从未启动，或当前正是调度线程（不能等自己退出）：直接收尾。
+            if (previous == 0 || Environment.CurrentManagedThreadId == _threadId)
+            {
+                Interlocked.Exchange(ref _state, 3);
+                _exitSignal.TrySetResult();
+                return default;
+            }
+        }
+
+        // 正常在飞：等 Run 的 finally 完成 _exitSignal（并发/重复释放同样安全）。
+        return new ValueTask(_exitSignal.Task);
+    }
+#endif
 
     /// <summary>
     /// 由 <see cref="HighResolutionTimer.Start"/> 调用：置入到期时间、加入堆、唤醒调度线程。
@@ -310,9 +351,24 @@ public sealed class HighResolutionScheduler : IDisposable
     }
 #endif
 
+    /// <summary>调度线程入口：无论正常结束、绑核失败提前返回还是异常，最终都要让 <see cref="_exitSignal"/> 完成。</summary>
+    private void Run()
+    {
+        try
+        {
+            RunCore();
+        }
+        finally
+        {
+#if NET8_0_OR_GREATER
+            _exitSignal.TrySetResult();
+#endif
+        }
+    }
+
     /// <summary>调度线程主循环。</summary>
     [System.Runtime.CompilerServices.MethodImpl(JitHints.AggressiveOptimization)]
-    private void Run()
+    private void RunCore()
     {
         if (_options.ProcessorIndex is int processorIndex)
         {
@@ -461,6 +517,10 @@ public sealed class HighResolutionScheduler : IDisposable
             {
                 nextDue = HiResClock.Add(firedAt, periodTicks);
             }
+
+            // 抖动（默认 0 时 NextJitterTicks 返回 0，格点不变）：把下一拍的应到点再往后推一点点，
+            // 用于把大量同相位定时器的唤醒时刻散开（防惊群）。它主动放弃严格无漂移，是抖动的本意。
+            nextDue = HiResClock.Add(nextDue, timer.NextJitterTicks());
         }
 
         double latenessNanos = HiResClock.ToNanoseconds(firedAt - dueTimestamp);

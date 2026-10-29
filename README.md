@@ -26,6 +26,7 @@ Source code, issues, and changelog: [github.com/OODD-DevNet/OODD.Timer](https://
 - [Choosing among the three wait modes](#choosing-among-the-three-wait-modes)
 - [Pull mode: waiting for the next tick synchronously or asynchronously](#pull-mode-waiting-for-the-next-tick-synchronously-or-asynchronously)
 - [API guide](#api-guide)
+- [New APIs in 1.2](#new-apis-in-12)
 - [Where the accuracy limits are](#where-the-accuracy-limits-are)
 - [Reducing tail latency: process-level tuning](#reducing-tail-latency-process-level-tuning)
 - [Usage pitfalls](#usage-pitfalls)
@@ -371,6 +372,49 @@ bool healthy = st.JitterRatio < 0.05 && st.MissedTicks == 0;
 ```
 
 The histogram has 64 power-of-two buckets. Bucket widths reflect the order of magnitude of the error, so reported percentiles are conservatively high: better to overestimate the error than underestimate it.
+
+---
+
+## New APIs in 1.2
+
+Version 1.2 adds a handful of surface-level capabilities on top of the 1.1 core, none of which change the default precision path. Everything below is covered by the test suite (142 tests on net8.0 / net10.0).
+
+- **`await using` (`IAsyncDisposable`)** on `HighResolutionTimer`, `HighResolutionScheduler` and `HighResolutionSchedulerPool` (net8.0+). When a timer owns its scheduler, `DisposeAsync` awaits that thread exiting cleanly instead of blocking a thread-pool thread; a shared scheduler is only detached from, matching the synchronous `Dispose` semantics.
+- **`TimerStatistics.ToCsv()` / `ToJson()`** — machine-readable scalar metrics (invariant culture; CSV with header, valid JSON parseable by `JsonDocument`; fields suffixed `_ns` are nanoseconds).
+- **`JitterNanoseconds`** — spreads the due point of each tick by a random `[0, JitterNanoseconds]` offset for thundering-herd avoidance. Default `0` keeps the strict `firstDue + n*period` grid; enabling it deliberately gives up that invariant (that is the point). The offset is non-negative, so `LatenessNanoseconds` still only measures lateness relative to the tick's own due point. Must be smaller than one period.
+- **`OffloadCallback`** — runs the callback/event on a thread-pool thread so the scheduler thread returns to waiting immediately. Single-in-flight back pressure: while a delivery is running, the next due tick is dropped and counted in `HighResolutionTimer.OffloadedCallbackDrops` (never an unbounded queue). This trades away callback-delivery precision for non-blocking — opt in deliberately.
+- **`HighResolutionTimers.At(DateTimeOffset, Action, WaitMode)`** — one-shot trigger at an absolute wall-clock instant (converted to a relative delay, then driven by the monotonic clock). Past / exactly-now times are clamped to fire as soon as possible.
+- **`HighResolutionSchedulerPool`** — holds `N` schedulers and spreads timers across them via `Next()` (round-robin) or `LeastLoaded()`, with an indexer and `CreateTimer(...)`. For "callbacks are not tiny and there are many of them", it parallelizes firing across cores instead of serializing on one thread.
+- **`VirtualTimeProvider`** (net8.0+) — a deterministic `TimeProvider` for tests: `Advance(TimeSpan)` / `AdvanceTo(long)` move a virtual clock and fire due timer callbacks synchronously in order. It does **not** drive real `HighResolutionTimer`s — for real low-latency firing use `HighResolutionTimeProvider`; for unit tests that must not actually wait, use `VirtualTimeProvider`.
+
+```csharp
+using OODD.Timer;
+
+// await using + zero-allocation callback, then export metrics
+await using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+{
+    Period = TimeSpan.FromMilliseconds(1),
+    Callback = Sample,                 // runs on the scheduler thread, allocation-free
+    JitterNanoseconds = 50_000,        // spread due points by up to 50us (anti thundering-herd)
+});
+
+Console.WriteLine(timer.GetStatistics().ToCsv());
+Console.WriteLine(timer.GetStatistics().ToJson());
+
+// many non-trivial callbacks: spread them across 4 scheduler threads
+await using var pool = new HighResolutionSchedulerPool(4);
+for (int i = 0; i < 32; i++)
+    pool.CreateTimer(TimeSpan.FromMilliseconds(5), OnTick, WaitMode.Hybrid);
+
+// absolute-time one-shot
+using var once = HighResolutionTimers.At(DateTimeOffset.UtcNow.AddSeconds(3), () => Console.WriteLine("three seconds from now"));
+
+// deterministic virtual clock for tests
+var clock = new VirtualTimeProvider();
+using var parked = clock.CreateTimer(_ => Console.WriteLine("tick"), null,
+    TimeSpan.FromSeconds(30), Timeout.InfiniteTimeSpan);
+clock.Advance(TimeSpan.FromSeconds(30));    // fires now, no real waiting
+```
 
 ---
 

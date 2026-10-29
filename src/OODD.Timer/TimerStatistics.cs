@@ -187,6 +187,137 @@ public readonly struct TimerStatistics
             + $"lateness p50={GetLatenessPercentile(0.50):F0}ns p99={GetLatenessPercentile(0.99):F0}ns max={MaxLatenessNanoseconds:F0}ns "
             + $"period={PeriodNanoseconds / 1000:F1}us";
     }
+
+    /// <summary>
+    /// 把标量精度指标导出为一行 CSV（含表头 <c>stats_csv_header</c> 对应列，UTF-8、不变文化、<c>\n</c> 结尾）。
+    /// 适合落盘或喂给表格工具；直方图明细请用 <see cref="ToLatenessHistogramText"/>。
+    /// </summary>
+    public string ToCsv()
+    {
+        StringBuilder header = new(), row = new();
+
+        void Add(string name, string value)
+        {
+            if (header.Length > 0)
+            {
+                header.Append(',');
+                row.Append(',');
+            }
+
+            header.Append(name);
+            row.Append(value);
+        }
+
+        Add("name", CsvQuote(Name ?? "timer"));
+        Add("mode", Mode.ToString());
+        Add("period_ns", F(PeriodNanoseconds));
+        Add("ticks", TickCount.ToString(CultureInfo.InvariantCulture));
+        Add("missed", MissedTicks.ToString(CultureInfo.InvariantCulture));
+        Add("errors", ErrorCount.ToString(CultureInfo.InvariantCulture));
+        Add("uptime_s", F(UptimeSeconds));
+        Add("fire_rate_per_s", F(FireRatePerSecond));
+        Add("jitter_ratio", F(JitterRatio));
+        Add("lateness_mean_ns", F(MeanLatenessNanoseconds));
+        Add("lateness_min_ns", F(MinLatenessNanoseconds));
+        Add("lateness_max_ns", F(MaxLatenessNanoseconds));
+        Add("lateness_p50_ns", F(GetLatenessPercentile(0.50)));
+        Add("lateness_p90_ns", F(GetLatenessPercentile(0.90)));
+        Add("lateness_p99_ns", F(GetLatenessPercentile(0.99)));
+        Add("lateness_p99_9_ns", F(GetLatenessPercentile(0.999)));
+        Add("interval_mean_ns", F(MeanIntervalNanoseconds));
+        Add("interval_min_ns", F(MinIntervalNanoseconds));
+        Add("interval_max_ns", F(MaxIntervalNanoseconds));
+        Add("spin_window_ns", F(SpinWindowNanoseconds));
+        Add("max_kernel_wake_ns", F(MaxKernelWakeLatencyNanoseconds));
+
+        return header.Append('\n').Append(row).Append('\n').ToString();
+    }
+
+    /// <summary>
+    /// 把同一组标量精度指标导出为 JSON 对象字符串（UTF-8、不变文化、非缩进）。
+    /// 迟到分位数沿用对数分桶上界（见类型说明），字段名以 <c>_ns</c> 结尾标明纳秒单位。
+    /// </summary>
+    public string ToJson()
+    {
+        StringBuilder b = new();
+        b.Append('{');
+        Str("name", Name ?? "timer");
+        Str("mode", Mode.ToString());
+        Num("period_ns", PeriodNanoseconds);
+        NumInt("ticks", TickCount);
+        NumInt("missed", MissedTicks);
+        NumInt("errors", ErrorCount);
+        Num("uptime_s", UptimeSeconds);
+        Num("fire_rate_per_s", FireRatePerSecond);
+        Num("jitter_ratio", JitterRatio);
+        Num("lateness_mean_ns", MeanLatenessNanoseconds);
+        Num("lateness_min_ns", MinLatenessNanoseconds);
+        Num("lateness_max_ns", MaxLatenessNanoseconds);
+        Num("lateness_p50_ns", GetLatenessPercentile(0.50));
+        Num("lateness_p90_ns", GetLatenessPercentile(0.90));
+        Num("lateness_p99_ns", GetLatenessPercentile(0.99));
+        Num("lateness_p99_9_ns", GetLatenessPercentile(0.999));
+        Num("interval_mean_ns", MeanIntervalNanoseconds);
+        Num("interval_min_ns", MinIntervalNanoseconds);
+        Num("interval_max_ns", MaxIntervalNanoseconds);
+        Num("spin_window_ns", SpinWindowNanoseconds);
+        Num("max_kernel_wake_ns", MaxKernelWakeLatencyNanoseconds);
+        b.Append('}');
+        return b.ToString();
+
+        void Num(string name, double value) => Append(name, F(value));
+        void NumInt(string name, long value) => Append(name, value.ToString(CultureInfo.InvariantCulture));
+        void Str(string name, string value) => Append(name, JsonQuote(value));
+
+        void Append(string name, string rawValue)
+        {
+            if (b.Length > 1)
+            {
+                b.Append(',');
+            }
+
+            b.Append(JsonQuote(name)).Append(':').Append(rawValue);
+        }
+    }
+
+    private static string F(double value) => MathCompat.IsFinite(value)
+        ? value.ToString("R", CultureInfo.InvariantCulture)
+        : "null";
+
+    private static string CsvQuote(string value) => "\"" + value.Replace("\"", "\"\"") + "\"";
+
+    private static string JsonQuote(string value)
+    {
+        StringBuilder s = new(value.Length + 2);
+        s.Append('"');
+        foreach (char c in value)
+        {
+            switch (c)
+            {
+                case '"': s.Append("\\\""); break;
+                case '\\': s.Append("\\\\"); break;
+                case '\b': s.Append("\\b"); break;
+                case '\f': s.Append("\\f"); break;
+                case '\n': s.Append("\\n"); break;
+                case '\r': s.Append("\\r"); break;
+                case '\t': s.Append("\\t"); break;
+                default:
+                    if (c < 0x20)
+                    {
+                        s.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        s.Append(c);
+                    }
+
+                    break;
+            }
+        }
+
+        s.Append('"');
+        return s.ToString();
+    }
 }
 
 /// <summary>

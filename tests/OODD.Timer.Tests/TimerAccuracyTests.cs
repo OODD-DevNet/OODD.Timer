@@ -279,6 +279,67 @@ public class TimerAccuracyTests
             $"事件路径 {eventBytes}B 与回调路径 {callbackBytes}B 的差异小于每拍一个 EventArgs 的量级");
     }
 
+    [Theory]
+    [InlineData(WaitMode.Spin)]
+    [InlineData(WaitMode.Hybrid)]
+    public void CallbackPath_SteadyStateAllocatesZeroBytesOnSchedulerThread(WaitMode mode)
+    {
+        const int Warmup = 200;
+        const int SampleIntervals = 1_000;
+        using var done = new ManualResetEventSlim();
+        int callbacks = 0;
+        int intervals = 0;
+        int callbackThread = 0;
+        bool sameThread = true;
+        long baseline = 0;
+        long allocatedBytes = -1;
+        bool completed;
+
+        using (var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+        {
+            Period = TimeSpan.FromMilliseconds(1),
+            Mode = mode,
+            AutoStart = false,
+            Callback = () =>
+            {
+                long allocated = GC.GetAllocatedBytesForCurrentThread();
+                if (intervals == SampleIntervals)
+                {
+                    return;
+                }
+
+                int thread = Environment.CurrentManagedThreadId;
+                callbacks++;
+                if (callbacks == Warmup)
+                {
+                    baseline = allocated;
+                    callbackThread = thread;
+                }
+                else if (callbacks > Warmup)
+                {
+                    sameThread &= thread == callbackThread;
+                    intervals++;
+                    if (intervals == SampleIntervals)
+                    {
+                        // Callback-entry counters include the complete intervening scheduler path.
+                        allocatedBytes = allocated - baseline;
+                        done.Set();
+                    }
+                }
+            },
+        }))
+        {
+            timer.Start();
+            completed = done.Wait(TimeSpan.FromSeconds(20));
+        }
+
+        Assert.True(completed, $"{mode}: completed {intervals}/{SampleIntervals} sample intervals");
+        Assert.Equal(Warmup + SampleIntervals, callbacks);
+        Assert.Equal(SampleIntervals, intervals);
+        Assert.True(sameThread, "Allocation counters must come from the same scheduler thread");
+        Assert.Equal(0L, allocatedBytes);
+    }
+
     private static bool WaitForSequence(HighResolutionTimer timer, int expected, TimeSpan timeout)
     {
         long deadline = HiResClock.Add(HiResClock.Now(), HiResClock.ToTicks(timeout));

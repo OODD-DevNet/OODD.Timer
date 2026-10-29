@@ -351,6 +351,7 @@ internal static class WaitEngine
     /// <param name="settings">等待策略。</param>
     /// <returns><see langword="true"/> 表示已到点；<see langword="false"/> 表示被 <see cref="WaitSettings.Wake"/>
     /// 或 <see cref="WaitSettings.CancellationToken"/> 提前打断。</returns>
+    [MethodImpl(JitHints.AggressiveOptimization)]
     public static bool WaitUntil(long deadlineTimestamp, in WaitSettings settings)
     {
         switch (settings.Mode)
@@ -369,6 +370,7 @@ internal static class WaitEngine
     /// <summary>
     /// 混合等待：内核睡到"到期前一个自旋窗口"，然后自旋到点。
     /// </summary>
+    [MethodImpl(JitHints.AggressiveOptimization)]
     private static bool HybridTo(long deadlineTimestamp, in WaitSettings settings)
     {
         AdaptiveSpinWindow? window = settings.AdaptiveWindow;
@@ -421,6 +423,7 @@ internal static class WaitEngine
     /// <param name="cancellationToken">取消令牌。</param>
     /// <param name="fineSpinTicks">进入"紧自旋"的阈值；0 表示从一开始就紧自旋。</param>
     /// <returns><see langword="true"/> 表示已到点。</returns>
+    [MethodImpl(JitHints.AggressiveOptimization)]
     public static bool SpinTo(long deadlineTimestamp, ManualResetEventSlim? wake, CancellationToken cancellationToken, long fineSpinTicks = 0)
     {
         if (wake is null && !cancellationToken.CanBeCanceled)

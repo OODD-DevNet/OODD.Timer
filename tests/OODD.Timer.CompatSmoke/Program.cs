@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
@@ -55,6 +56,7 @@ internal static class Program
         CheckStatistics();
         CheckKernelLatency();
         CheckWindowsTimerResolution();
+        CheckWindowsProcessorAffinity();
 
         Console.WriteLine();
         Console.WriteLine(s_failures == 0 ? "ALL PASSED" : (s_failures + " FAILED"));
@@ -243,6 +245,129 @@ internal static class Program
         KernelWakeLatency latency = HighResolutionWait.MeasureKernelWakeLatency(32);
         Check("MeasureKernelWakeLatency", latency.SampleCount == 32 && latency.P99Lateness >= 0, latency.ToString());
     }
+
+    private static void CheckWindowsProcessorAffinity()
+    {
+        if (Environment.OSVersion.Platform != PlatformID.Win32NT)
+        {
+            Console.WriteLine("SKIP  Windows processor affinity | Windows-only check; not tested on this platform.");
+            return;
+        }
+
+        try
+        {
+            NativeGroupAffinity callerAffinity;
+            if (!GetThreadGroupAffinity(GetCurrentThread(), out callerAffinity))
+            {
+                Check("Windows processor affinity", false, "GetThreadGroupAffinity error=" + Marshal.GetLastWin32Error());
+                return;
+            }
+
+            int processorIndex = -1;
+            for (int index = IntPtr.Size * 8 - 1; index >= 0; index--)
+            {
+                if ((callerAffinity.Mask.ToUInt64() & (1UL << index)) != 0)
+                {
+                    processorIndex = index;
+                    break;
+                }
+            }
+
+            if (processorIndex < 0)
+            {
+                Check("Windows processor affinity", false, "The caller has no allowed processor.");
+                return;
+            }
+
+            int samples = 0;
+            int failed = 0;
+            using (var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+            {
+                ProcessorIndex = processorIndex,
+                ProcessorGroup = callerAffinity.Group,
+                Period = TimeSpan.FromMilliseconds(1),
+                Mode = WaitMode.Kernel,
+                ThreadPriority = ThreadPriority.Normal,
+                AutoStart = false,
+                Callback = () =>
+                {
+                    if (Interlocked.CompareExchange(ref samples, 0, 0) >= 100)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        NativeProcessorNumber processor;
+                        GetCurrentProcessorNumberEx(out processor);
+                        NativeGroupAffinity actualAffinity;
+                        if (processor.Group != callerAffinity.Group || processor.Number != processorIndex
+                            || !GetThreadGroupAffinity(GetCurrentThread(), out actualAffinity)
+                            || actualAffinity.Group != callerAffinity.Group
+                            || actualAffinity.Mask.ToUInt64() != (1UL << processorIndex))
+                        {
+                            Interlocked.Exchange(ref failed, 1);
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        Interlocked.Exchange(ref failed, 1);
+                    }
+
+                    Interlocked.Increment(ref samples);
+                },
+            }))
+            {
+                timer.Start();
+                Stopwatch watch = Stopwatch.StartNew();
+                while (Interlocked.CompareExchange(ref samples, 0, 0) < 100 && watch.ElapsedMilliseconds < 10000)
+                {
+                    Thread.Sleep(1);
+                }
+
+                timer.Stop();
+            }
+
+            NativeGroupAffinity after;
+            bool callerUnchanged = GetThreadGroupAffinity(GetCurrentThread(), out after)
+                && after.Group == callerAffinity.Group && after.Mask.Equals(callerAffinity.Mask);
+            Check("Windows processor affinity", samples == 100 && failed == 0 && callerUnchanged,
+                "group=" + callerAffinity.Group + " cpu=" + processorIndex + " samples=" + samples
+                + " mismatch=" + failed + " callerUnchanged=" + callerUnchanged);
+        }
+        catch (Exception exception)
+        {
+            Check("Windows processor affinity", false, exception.ToString());
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeGroupAffinity
+    {
+        public UIntPtr Mask;
+        public ushort Group;
+        public ushort Reserved0;
+        public ushort Reserved1;
+        public ushort Reserved2;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeProcessorNumber
+    {
+        public ushort Group;
+        public byte Number;
+        public byte Reserved;
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentThread();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetThreadGroupAffinity(IntPtr thread, out NativeGroupAffinity affinity);
+
+    [DllImport("kernel32.dll")]
+    private static extern void GetCurrentProcessorNumberEx(out NativeProcessorNumber processor);
 
     private static void CheckWindowsTimerResolution()
     {

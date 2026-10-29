@@ -78,6 +78,8 @@ OODD.Timer 的做法是把计时和等待都换掉。计时读 `Stopwatch.GetTim
 
 ```powershell
 dotnet run -c Release --project bench/OODD.Timer.Benchmark -- 1 10000
+# 末尾加 rt 会多跑两行 Windows THREAD_PRIORITY_TIME_CRITICAL 对照
+dotnet run -c Release --project bench/OODD.Timer.Benchmark -- 1 10000 rt
 ```
 
 每个实现用同一把尺子量：每次触发相对"锚点 + n × 周期"记录落后量，再拆成两个指标。一个是每拍迟到，即相邻落点间隔减去周期，只看抖动、不随时长累加；另一个是累积漂移，即首尾之差，为 0 说明按绝对格点推进，非 0 说明误差在累加。
@@ -86,22 +88,26 @@ dotnet run -c Release --project bench/OODD.Timer.Benchmark -- 1 10000
 
 | 实现 | 每拍迟到 p50 | 每拍迟到 p95 | 每拍迟到 p99 | 每拍迟到 max | 累积漂移 | 漂移/拍 | 期间 CPU |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Thread.Sleep(1ms) | 14531.1µs | 15292.0µs | 15992.5µs | 20986.8µs | 145313.19ms | 14532.77µs | 219ms |
-| System.Threading.Timer (1.0ms) | 14526.0µs | 15271.9µs | 16024.6µs | 20744.2µs | 46755.62ms | 4676.03µs | 469ms |
-| PeriodicTimer (1.0ms) | 14526.3µs | 15258.0µs | 15945.6µs | 18368.0µs | 144815.43ms | 14482.99µs | 984ms |
-| HighResolutionWait.Sleep(Kernel) | 579.4µs | 795.2µs | 1203.9µs | 7089.0µs | 5919.13ms | 591.97µs | 125ms |
-| HighResolutionWait.Sleep(Spin) | 0.1µs | 1.0µs | 73.6µs | 867.1µs | 30.05ms | 3.00µs | 9734ms |
-| OODD.Timer (Kernel) | 37.7µs | 340.4µs | 573.1µs | 13313.3µs | 78.86ms | 7.89µs | 203ms |
-| OODD.Timer (Hybrid) | 0.0µs | 1.8µs | 45.1µs | 1181.3µs | 0.62ms | 0.06µs | 9859ms |
-| OODD.Timer (Spin) | 0.0µs | 1.9µs | 43.4µs | 3181.5µs | 4.83ms | 0.48µs | 9688ms |
+| Thread.Sleep(1ms) | 14561.0µs | 15199.1µs | 15515.0µs | 17855.9µs | 145848.91ms | 14586.35µs | 156ms |
+| System.Threading.Timer (1.0ms) | 14563.2µs | 15232.0µs | 15715.6µs | 16726.0µs | 46784.97ms | 4678.97µs | 484ms |
+| PeriodicTimer (1.0ms) | 14540.4µs | 15400.8µs | 16240.5µs | 20089.3µs | 144226.43ms | 14424.09µs | 1609ms |
+| HighResolutionWait.Sleep(Kernel) | 568.2µs | 731.5µs | 881.2µs | 2055.6µs | 5687.24ms | 568.78µs | 94ms |
+| HighResolutionWait.Sleep(Spin) | 0.1µs | 0.8µs | 42.4µs | 1094.5µs | 16.98ms | 1.70µs | 9781ms |
+| OODD.Timer (Kernel) | 34.8µs | 326.2µs | 513.1µs | 3812.1µs | 38.50ms | 3.85µs | 141ms |
+| OODD.Timer (Hybrid) | 0.0µs | 1.5µs | 26.8µs | 279.5µs | -0.20ms | -0.02µs | 9625ms |
+| OODD.Timer (Spin) | 0.0µs | 1.3µs | 22.5µs | 1368.6µs | 0.81ms | 0.08µs | 9641ms |
+| OODD.Timer (Hybrid, TIME_CRITICAL) | 0.0µs | 0.9µs | 2.7µs | 617.9µs | -0.62ms | -0.06µs | 9953ms |
+| OODD.Timer (Spin, TIME_CRITICAL) | 0.0µs | 0.9µs | 3.1µs | 125.4µs | -0.13ms | -0.01µs | 9875ms |
 
 前三行的每拍迟到就是 14.5ms，累计落后 145 秒，这就是"10~15ms 误差"的真面目——它是结构性累加，不是随机抖动。
 
-`OODD.Timer (Hybrid)` 的每拍中位迟到低于表格分辨率，p95 是 1.8µs，10 秒长跑累计漂移 0.62ms。库内自统计（相对本拍应到时刻）给出 p50 = 128ns、p99 = 65µs。
+`OODD.Timer (Hybrid)` 的每拍中位迟到低于表格分辨率，p95 是 1.5µs，10 秒长跑累计漂移在 0 附近（负数只是首拍偏早的常数偏移）。库内自统计（相对本拍应到时刻）给出 p50 = 256ns、p99 = 32.8µs。
 
-`OODD.Timer (Kernel)` 是几乎不占 CPU 的档位：每拍迟到 p50 = 37.7µs，因为按绝对格点推进，唤醒的固定偏置不会累加，CPU 只有 203ms / 10s，约 2%。这一行 max 的 13.3ms 是过载时合并空拍的表现，后面[精度的天花板](#精度的天花板在哪里)会解释。
+最后两行的区别只有一个：`UseRealTimePriority = true`，调度线程被提到 Windows 的 `THREAD_PRIORITY_TIME_CRITICAL`（15）。p99 从 26.8µs 降到 2.7µs，代价是 CPU 从 96% 涨到 99.5%——那个核本来就在自旋，区别是它现在几乎不再被打断。`Spin + TIME_CRITICAL` 那一行的 max 是 125µs，这是本机能给出的最紧的一组数。
 
-`HighResolutionWait.Sleep(Kernel)` 那行是裸等待原语，自我节律，579µs 的每次超时累加成了 5.9 秒。放在表里就是为了说明"精度"和"无漂移"是两件不同的事，本库主要解决后者。Hybrid 和 Spin 的 CPU 接近满一个核，那是自旋的代价。
+`OODD.Timer (Kernel)` 是几乎不占 CPU 的档位：每拍迟到 p50 = 34.8µs，因为按绝对格点推进，唤醒的固定偏置不会累加，CPU 只有 141ms / 10s，约 1.4%。这一行的 max 是过载时合并空拍的表现，后面[精度的天花板](#精度的天花板在哪里)会解释。
+
+`HighResolutionWait.Sleep(Kernel)` 那行是裸等待原语，自我节律，568µs 的每次超时累加成了 5.7 秒。放在表里就是为了说明"精度"和"无漂移"是两件不同的事，本库主要解决后者。Hybrid 和 Spin 的 CPU 接近满一个核，那是自旋的代价。
 
 这些数字只描述跑这条命令的那台机器（Windows 11 10.0.26200、16 核、.NET 10、控制台无其他负载）。换机器、换系统、加后台负载都必须重测，基准程序会把 Markdown 表格直接打印出来，贴到 README 或 issue 里就行。
 
@@ -277,7 +283,7 @@ Console.WriteLine(HiResClock.DescribePlatform()); // 频率、是否高分辨率
 
 ### `HighResolutionTimer` — 定时器本体
 
-一个定时器不占一个线程，它挂在 `HighResolutionScheduler` 的调度线程上。
+定时器挂在 `HighResolutionScheduler` 的调度线程上；默认每个定时器拥有私有调度器，需要共用线程时显式传入同一调度器。
 
 ```csharp
 // 构造：便捷重载 + options
@@ -317,7 +323,7 @@ timer.ResetStatistics();
 
 ### `HighResolutionScheduler` — 调度线程
 
-一个专用线程加一个索引化二叉堆，插入和删除都是 O(log n)。全进程默认共享一个，定时器多的时候复用它省线程和上下文切换。
+一个专用线程加一个索引化二叉堆，插入和删除都是 O(log n)。每个定时器默认自己创建调度器；需要共享时显式传入同一个实例或 `HighResolutionScheduler.Shared`。
 
 ```csharp
 using var scheduler = new HighResolutionScheduler(new HighResolutionSchedulerOptions
@@ -325,6 +331,7 @@ using var scheduler = new HighResolutionScheduler(new HighResolutionSchedulerOpt
     Name = "My.ControlLoop",
     Mode = WaitMode.Hybrid,
     ThreadPriority = ThreadPriority.Highest,
+    UseRealTimePriority = false,   // Windows 上提到 TIME_CRITICAL(15)，见"把尾延迟压下去"
 });
 
 var a = new HighResolutionTimer(new HighResolutionTimerOptions { Period = TimeSpan.FromMilliseconds(1),  Scheduler = scheduler });
@@ -333,7 +340,7 @@ var b = new HighResolutionTimer(new HighResolutionTimerOptions { Period = TimeSp
 Console.WriteLine($"{scheduler.TimerCount} 个定时器，累计 {scheduler.TotalFiredTicks} 拍，线程 id={scheduler.ThreadId}");
 ```
 
-堆空的时候线程阻塞在唤醒事件上，CPU 为零。`HighResolutionScheduler.Shared` 是全进程共享实例，别 `Dispose` 它，需要隔离就自己 `new` 一个。另外线程优先级最高只能到 `ThreadPriority.Highest`，Windows 上这映射的是优先级类别，不是真正的实时优先级。
+堆空的时候线程阻塞在唤醒事件上，CPU 为零。`HighResolutionScheduler.Shared` 是全进程共享实例，别 `Dispose` 它，需要隔离就自己 `new` 一个。`ThreadPriority` 最高只能到 `Highest`，Windows 上那映射的是优先级类别；要真正的 15 级用 `UseRealTimePriority = true`。
 
 ### `HighResolutionWait` — 只要等待，不要定时器
 
@@ -369,15 +376,17 @@ bool healthy = st.JitterRatio < 0.05 && st.MissedTicks == 0;
 
 不说清楚做不到什么，"微秒级"就是空话。
 
-第一，100ns 是地板。单调时钟频率 10MHz，一格 100ns，比这更细的差异本库无法区分，只能说"已到点"。
+第一，本机时钟粒度是 100ns。单调时钟频率 10MHz，一格 100ns，比这更细的差异无法区分；其他平台以 `HiResClock.Frequency` 的实际读数为准。这不是回调误差上限。
 
-第二，尾延迟不归定时器管，归操作系统管。p50 已经在时钟粒度以内，p99 和 max 的尖峰来自 GC 停顿和内核抢占。本机实测纯自旋 1ms 等待的最大迟到尖峰 1.31ms，来源就是这两项。真要微秒级硬保证，需要操作系统的实时调度——`SCHED_FIFO`、隔离核、关掉 CPU 频率调节，这不是任何库能凭空给的。
+第二，库不能给尾延迟设硬上限。GC、JIT、内核抢占、中断和回调自身耗时都可能造成尖峰；没有运行时/内核跟踪，不能只凭延迟值确定原因。本机一组 1ms 节拍测试中，默认优先级 p99 是三十几微秒，开 `UseRealTimePriority` 后 p99 到 1.6–2.9µs、p99.9 到 50µs 上下，但 max 仍有几百微秒到几毫秒。实时调度、隔离核和电源策略能进一步改善，不能单独消除 CLR 暂停或提供物理输出保证。
 
 第三，回调必须比节拍短。回调超过周期时，库不堆叠补发，而是合并空拍：`MissedTicks` 增加、`Overrun` 为 true，但格点不漂。过载表现成丢拍，而不是越跑越慢。
 
 第四，服务器 GC 和大堆会让尖峰变差。`GCSettings.IsServerGC` 和这个库的尾延迟目标是冲突的。
 
 第五，Windows 的高分辨率等待要求 Windows 10 1803 以上。更早的系统或者句柄创建失败时会退回普通等待句柄和 `Thread.Sleep`，精度回到节拍量级，这时自适应窗口会自动放大来自救，功能不受影响，只是 CPU 变高。`GetPlatformInfo().KernelHighResolutionWaits` 会如实告诉你当前走的是哪条路。
+
+顺带一个实测事实：即使是高分辨率句柄，这台机器上任何不超过 1ms 的睡眠请求都会被量化到约 500µs 的网格（请求 50µs 实际睡 518–543µs，请求 100µs 睡 516–598µs，请求 500µs 睡 0.53–2.7ms，请求 1ms 睡 1.06–1.56ms）。所以混合模式在 1ms 及更短的周期上其实一直在自旋，这也是 p50 能压到 100ns 的原因。周期越长，睡眠占比越高、CPU 越省，代价是每拍要多吃一次内核唤醒的过冲——100Hz 下混合模式的 p99 是五十微秒上下，而纯自旋能回到 6µs（代价是一整核）。两边都要 µs 级又在长周期上省 CPU，只能靠 `UseRealTimePriority` 加一个足够大的自旋窗口去逼近。
 
 第六，Linux 和 macOS 走 `nanosleep`。亚毫秒通常没问题（几十到几百微秒），但具体取决于内核 HZ、`CONFIG_HRTICK`、CPU 频率调节和调度器负载。必须在目标机上用 `MeasureKernelWakeLatency()` 复核，别信任何文档里的数字，包括这份。
 
@@ -390,8 +399,7 @@ bool healthy = st.JitterRatio < 0.05 && st.MissedTicks == 0;
 `RuntimeTuning` 里的两项都是进程级设置，会影响同进程所有代码，所以默认全关，要你自己显式调用。
 
 ```csharp
-// GC 进入 SustainedLowLatency，推迟阻塞式 GC，代价是托管内存占用上升。
-// 它只压 p99 和 max——本库定时器的 p50 本来就在时钟粒度以内，尖峰才是 GC 造成的。
+// SustainedLowLatency 推迟部分阻塞式 Gen2 回收，可能增加内存占用，但不消除所有 GC 暂停。
 using (RuntimeTuning.RequestGcLatencyMode(GCLatencyMode.SustainedLowLatency))
 {
     // 引用计数式：最后一个释放时才恢复原模式，
@@ -407,10 +415,79 @@ using (RuntimeTuning.RequestSystemTimerResolution(1)) { /* ... */ }
 
 也可以让定时器自己管：`HighResolutionTimerOptions.PreferSustainedLowLatencyGc = true`。
 
-真正有效的组合，按收益排序，每一条都需要你在目标机上验证：
+### Windows：把调度线程提到 TIME_CRITICAL
 
-1. 客户端 GC（`ServerGarbageCollection=false`）加减少分配，热点回调里避免闭包和装箱。
-2. 把调度线程放到隔离核上（Linux 用 `isolcpus` / `cset`，Windows 用进程亲和性），并设 `ThreadPriority.Highest`。
+这是"微秒级"最直接的一档。`.NET` 的 `ThreadPriority` 最高只到 `Highest`（基础优先级 10），而 Windows 还有 15：
+
+```csharp
+var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+{
+    Period = TimeSpan.FromMilliseconds(1),
+    Mode = WaitMode.Hybrid,
+    UseRealTimePriority = true,   // 仅 Windows 生效，其他平台静默忽略
+});
+```
+
+`HighResolutionTimerOptions` 和 `HighResolutionSchedulerOptions` 上都有这个开关（后者在共享调度器时用）。本机 1ms 节拍、20000 拍、去掉前 800 拍的实测：
+
+| 配置 | p50 | p95 | p99 | p99.9 | max |
+|---|---:|---:|---:|---:|---:|
+| 默认（Highest） | 0.1µs | 0.6–0.9µs | 36.5–45.3µs | 145–284µs | 0.68–1.69ms |
+| `UseRealTimePriority` | 0.1µs | 0.5–0.6µs | 1.6–2.9µs | 50–56µs | 0.35–2.39ms |
+
+三组采样的中位值，同一进程、同一台机器、交替跑。p99 从三十几微秒降到 1.6–2.9µs，p99.9 直接砍到五分之一。
+
+高优先级自旋可能使同核低优先级线程饥饿，依赖它们持有的锁又会产生优先级反转，所以默认关闭。这个设置不提供核心独占，也挡不住中断或 GC。
+
+另外，这个库的热点路径（等待、自旋、调度循环、触发）都标了 `MethodImplOptions.AggressiveOptimization`，首调即完全优化。这不是为了微优化指令，而是为了躲开分层编译的后台提升——不标的话，一次 1ms 节拍的 20 秒跑批里，第 5 秒必出现一次 6ms 量级的 OSR 停顿（三次 A/B 全部复现，标注后消失，max 从 6.5ms 降到 0.14–0.98ms）。
+
+### 选择调度线程运行的核心
+
+```csharp
+using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+{
+    Period = TimeSpan.FromMilliseconds(1),
+    Mode = WaitMode.Spin,
+    ProcessorIndex = 2,
+    ProcessorGroup = 0,
+    UseRealTimePriority = true,
+    Callback = ControlStep,
+});
+```
+
+`ControlStep` 是你自己的短回调。`ProcessorIndex = null`（默认）不绑核；编号指**逻辑处理器**，不是物理核心。Windows 用组内编号配合 `ProcessorGroup`，例如组 1 的逻辑处理器 2 写成 `ProcessorGroup = 1, ProcessorIndex = 2`，不是把 66 放进一个 64 位掩码。32 位进程的组内掩码只能表达 0–31，更多处理器请用 64 位进程。Linux 用系统 CPU ID，组必须为 0；容器 CPU 配额下 `Environment.ProcessorCount` 不是可用 CPU ID 列表。
+
+绑核发生在调度线程里，先调用原生 API，再读回掩码验证，完成后才接收定时任务。不支持的平台在构造时抛异常；系统拒绝指定核心时 `Start()` 抛 `InvalidOperationException`，`InnerException` 保留原生错误，不会偷偷换核继续跑。自动启动时该异常从构造函数抛出。Windows 要求 Windows 7+；macOS 不提供等价的严格指定逻辑核心接口，显式拒绝而不是拿 affinity tag 冒充绑核。net40 资产只实现 Windows 绑核。
+
+多个定时器共用调度器时，在 `HighResolutionSchedulerOptions` 上设置这两个属性；单个定时器同时传入 `Scheduler` 和 `ProcessorIndex` 会被拒绝，避免看似配置了、实际不生效。配置在构造时复制，之后修改 options 不会迁移已经运行的线程。
+
+**绑核不是独占核心，也不是免 GC。** 它减少迁移和缓存失效，但该核的其他线程、中断以及同物理核的超线程仍然竞争资源。P/E 核机器尤其需要分别实测；选错核心可能更慢。`UseRealTimePriority` 也不把核心保留给你的进程。
+
+### GC 能压到什么程度
+
+- **持续运行**：选 `Callback`，不要同时订阅 `Elapsed`；预分配数组、队列和工作区，热路径不做日志、LINQ、装箱或异步等待。空回调路径可以不分配，但同进程其他代码触发 GC 时，它仍然会暂停。
+- **降低回收影响**：`PreferSustainedLowLatencyGc` 推迟部分阻塞式 Gen2 回收，不阻止 Gen0/Gen1、显式回收或内存压力下的回收。该选项是进程级租约，定时器 `Dispose` 时释放，不是只影响这个线程。
+- **有限关键窗口**：现代 .NET 的 `GC.TryStartNoGCRegion` 可以按预估的全进程分配预算申请无回收区间。先预热再申请，必须检查返回值；预算耗尽、显式 `GC.Collect` 或外部代码结束区间都可能让保证失效，`EndNoGCRegion` 也可能抛异常。它不能嵌套，不能把无限循环包进去，也不能由每个定时器自行开关。net40 的 BCL 没有这个 API。
+- **真正隔离宿主 GC**：将实际控制环放到不进入 CLR 的原生执行线程/进程，或运动控制器里，通过预分配的共享内存交换数据。仅把 C# 计时线程绑核、换成 NativeAOT、固定对象地址，或者让原生线程每拍回调 C#，都不能免除托管暂停。独立托管进程能隔离 UI 进程的 GC，但仍有自己的 GC。
+
+本库不暴露“禁用 GC”布尔开关，因为做不到对单个托管线程兑现。可复现的空载、绑核、有限分配压力、低延迟 GC 和短 NoGCRegion 对照：
+
+```powershell
+dotnet run -c Release --project bench/OODD.Timer.Benchmark -- --gc-probe 2 0
+```
+
+输出分别列出调度落点和**回调入口**迟到、GC 次数、漏拍和回调线程分配量；不能拿调度线程读时钟的时刻冒充控制代码已执行的时刻。NoGCRegion 被拒绝或提前结束也会如实输出。
+
+本机 1ms/Spin/Highest 的两轮对照中，每场景 2000 个回调间隔均为零分配，压力场景观测到实际 Gen0/Gen1 回收。NoGCRegion 成功保持无回收时，绑核场景的最坏入口迟到仍有 1.46–2.00ms；CPU 2 和 CPU 15 都没有比不绑定更准。这些反例和完整表格见 [实测数据](docs/benchmarks.md#110绑核与-gc-对照)，因此默认不绑核，也不承诺消除尾延迟。
+
+### 硬件时钟不是硬实时执行器
+
+当前 `HiResClock` 通过 `Stopwatch.GetTimestamp()` 使用系统选择的单调高分辨率计数器，Windows 是 QPC，通常已由硬件计数器支持。直接读 TSC 只能改变读数成本，不能阻止抢占或 GC，还要自己处理排序、虚拟化和频率换算；HPET/APIC 的定时中断也不是普通托管库能独占的。需要准时输出物理脉冲时，应由定时外设、运动控制卡或 FPGA 在硬件里执行，PC 提前下发带时间戳的任务。
+
+可以组合的调优项，每一条都需要你在目标机上验证：
+
+1. `UseRealTimePriority = true`（Windows），或者把线程放到隔离核上（Linux 用 `isolcpus` / `cset`）。
+2. 客户端 GC（`ServerGarbageCollection=false`）加减少分配，热点回调里避免闭包和装箱。高频场景用 `Callback` 而不是 `Elapsed`，每拍不再构造事件参数。
 3. 关掉 CPU 频率调节和深度睡眠状态；笔记本插电并关掉节能。
 4. 用 `WaitMode.Spin`，或者把 `SpinWindowNanoseconds` 设成 `MeasureKernelWakeLatency()` 的推荐值，别让窗口在运行中被尖峰撑大。
 5. 精度要求极高时，用 `HighResolutionScheduler` 单独起一个线程，只放这一两个定时器。
@@ -460,7 +537,7 @@ ITimer t = clock.CreateTimer(_ => Poll(), null,        // 高分辨率实现，�
 
 ```powershell
 dotnet build OODD.Timer.slnx -c Release          # 0 警告 0 错误（5 个 TFM）
-dotnet test  tests/OODD.Timer.Tests -c Release   # 104 个行为测试（net8.0 / net10.0）
+dotnet test  tests/OODD.Timer.Tests -c Release   # 123 个行为测试（net8.0 / net10.0）
 dotnet pack  src/OODD.Timer -c Release           # 产出 nupkg + snupkg，README / LICENSE / NOTICE 一并打包
 ```
 
@@ -522,15 +599,16 @@ Unity 2021.2+ 和 Godot 4（.NET 6/7 目标）拿 `netstandard2.0` 资产，可�
 
 **Q：我做运动控制，这么大的波动能消掉吗？**
 
-先分清分布和尾巴。本机实测（1ms 节拍、1.5 万拍、默认 `Hybrid`、Release 构建）p50 是 0.1µs、p99 是 131µs、p99.9 是 262µs，超过 200µs 的只有 28 拍，占 0.19%；尾部那几拍通常是 1~5ms，极端时 15~40ms。这些尾巴不是等待算法造成的，是操作系统把线程抢走了——时间片、其他进程、GC、首次 JIT，都在用户态库的控制之外。换成 `WaitMode.Spin` 也压不掉：同样 1.5 万拍，Spin 超过 200µs 的拍数反而更多（41 对 15），因为瓶颈在抢占，不在等待方式。
+先分清分布和尾巴。本机实测（1ms 节拍、2 万拍、去掉前 800 拍、默认 `Hybrid`、Release 构建）p50 是 0.1µs、p95 是 0.6–0.9µs、p99 是 36–45µs、p99.9 是 145–284µs，max 在 0.7–1.7ms；同一条件打开 `UseRealTimePriority` 后 p99 是 1.6–2.9µs、p99.9 是 50–56µs。这些尾巴不是等待算法造成的，是操作系统把线程抢走了——时间片、DPC、其他进程、GC，都在用户态库的控制之外。换 `WaitMode.Spin` 也压不掉（瓶颈在抢占，不在等待方式），只有提高线程优先级能把它们挤出去。
 
 能做的是这几件事：
 
-1. 回调里零分配、零 I/O。用 `HighResolutionTimerOptions.Callback`，日志写环形缓冲事后打印。
-2. 预热，丢掉启动后的头 1~2 秒。第一拍包含调度线程启动和 JIT，本机实测迟到 1~3ms。
-3. Release 构建。有分配压力时开 `PreferSustainedLowLatencyGc`，`ThreadPriority` 默认已经是 `Highest`。
-4. 轨迹按时间戳插补。用 `TimerElapsedEventArgs.FiredTimestamp`（零分配回调里自己读 `HiResClock.Now()`）算真实经过时间，位置 = f(t)。回调晚 3ms 只意味着"命令更新晚 3ms"，不会变成位置误差；反过来，如果控制律假设每拍正好 1ms，任何抖动都会累积成误差。
-5. 需要微秒级硬实时（伺服环、插补周期）时，把控制环放进实时内核、运动控制卡或 FPGA，PC 只做轨迹规划和下发。这是操作系统的边界。
+1. Windows 上开 `HighResolutionTimerOptions.UseRealTimePriority = true`，这是唯一能把 p99 从几十微秒拉进个位数微秒的开关；代价是占满一个逻辑核。
+2. 回调里零分配、零 I/O。用 `HighResolutionTimerOptions.Callback`，日志写环形缓冲事后打印。
+3. 预热，丢掉启动后的头 1~2 秒。第一拍包含调度线程启动和 JIT，本机实测迟到 1~3ms。
+4. Release 构建。有分配压力时开 `PreferSustainedLowLatencyGc`。
+5. 轨迹按时间戳插补。用 `TimerElapsedEventArgs.FiredTimestamp`（零分配回调里自己读 `HiResClock.Now()`）算真实经过时间，位置 = f(t)。回调晚 3ms 只意味着"命令更新晚 3ms"，不会变成位置误差；反过来，如果控制律假设每拍正好 1ms，任何抖动都会累积成误差。
+6. 需要硬实时（伺服环、插补周期）时，把控制环放进实时内核、运动控制卡或 FPGA，PC 只做轨迹规划和下发。这是操作系统的边界，也是 `UseRealTimePriority` 再高一级就到不了的地方。
 
 **Q：为什么默认是 `Hybrid` 而不是 `Kernel`？**
 

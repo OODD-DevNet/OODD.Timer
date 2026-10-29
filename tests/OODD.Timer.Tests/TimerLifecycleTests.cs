@@ -434,6 +434,61 @@ public class TimerLifecycleTests
         }
     }
 
+    [Fact]
+    public void UseRealTimePriority_RaisesSchedulerThreadToTimeCritical()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        int observed = -1;
+        using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+        {
+            Period = TimeSpan.FromMilliseconds(2),
+            Mode = WaitMode.Spin,
+            AutoStart = false,
+            UseRealTimePriority = true,
+        });
+        timer.Elapsed += (_, _) => Volatile.Write(ref observed, GetThreadPriority(GetCurrentThread()));
+
+        timer.Start();
+        Assert.True(WaitFor(timer, 3, TimeSpan.FromSeconds(2)), "定时器没有在预期时间内触发");
+        timer.Stop();
+
+        Assert.Equal(15, Volatile.Read(ref observed)); // THREAD_PRIORITY_TIME_CRITICAL
+    }
+
+    [Fact]
+    public void UseRealTimePriority_Off_KeepsDefaultPriority()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        int observed = -1;
+        using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+        {
+            Period = TimeSpan.FromMilliseconds(2),
+            Mode = WaitMode.Spin,
+            AutoStart = false,
+        });
+        timer.Elapsed += (_, _) => Volatile.Write(ref observed, GetThreadPriority(GetCurrentThread()));
+
+        timer.Start();
+        Assert.True(WaitFor(timer, 3, TimeSpan.FromSeconds(2)), "定时器没有在预期时间内触发");
+        timer.Stop();
+
+        Assert.NotEqual(15, Volatile.Read(ref observed));
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentThread();
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern int GetThreadPriority(IntPtr thread);
+
     private static bool WaitFor(HighResolutionTimer timer, long expectedSequence, TimeSpan timeout)
     {
         long deadline = HiResClock.Add(HiResClock.Now(), HiResClock.ToTicks(timeout));

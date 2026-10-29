@@ -1,5 +1,7 @@
 using OODD.Timer;
 using System.Collections.Concurrent;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 
 namespace OODD.Timer.Tests;
 
@@ -239,6 +241,549 @@ public class SchedulerTests
             }
         }
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ProcessorAffinity_BindsNativeThreadAndSurvivesRestartWithClonedOptions(bool useSharedScheduler)
+    {
+        bool windows = OperatingSystem.IsWindows();
+        if (!windows && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        NativeGroupAffinity callerWindowsAffinity = windows ? ReadWindowsAffinity() : default;
+        byte[] callerLinuxAffinity = windows ? Array.Empty<byte>() : ReadLinuxAffinity();
+        int processorIndex = windows
+            ? FindWindowsProcessor(callerWindowsAffinity.Mask)
+            : FindLinuxProcessor(callerLinuxAffinity);
+        ushort processorGroup = windows ? callerWindowsAffinity.Group : (ushort)0;
+        byte[] callbackLinuxAffinity = new byte[callerLinuxAffinity.Length];
+        using var completed = new ManualResetEventSlim(false);
+        var callbackGate = new object();
+        int samples = 0;
+        bool observing = false;
+        bool failed = false;
+        var schedulerOptions = new HighResolutionSchedulerOptions
+        {
+            ProcessorIndex = processorIndex,
+            ProcessorGroup = processorGroup,
+            ThreadPriority = ThreadPriority.Normal,
+        };
+        using var suppliedScheduler = useSharedScheduler ? new HighResolutionScheduler(schedulerOptions) : null;
+        var timerOptions = new HighResolutionTimerOptions
+        {
+            Scheduler = suppliedScheduler,
+            ProcessorIndex = useSharedScheduler ? null : processorIndex,
+            ProcessorGroup = useSharedScheduler ? (ushort)0 : processorGroup,
+            Period = TimeSpan.FromMilliseconds(1),
+            DueTime = TimeSpan.Zero,
+            Mode = WaitMode.Kernel,
+            ThreadPriority = ThreadPriority.Normal,
+            AutoStart = false,
+            Callback = () =>
+            {
+                lock (callbackGate)
+                {
+                    if (!observing)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        failed |= !MatchesNativeProcessor(windows, processorIndex, processorGroup, callbackLinuxAffinity);
+                    }
+                    catch (Exception)
+                    {
+                        failed = true;
+                    }
+
+                    if (++samples == 100)
+                    {
+                        observing = false;
+                        completed.Set();
+                    }
+                }
+            },
+        };
+        using var timer = new HighResolutionTimer(timerOptions);
+        HighResolutionScheduler scheduler = timer.Scheduler;
+        schedulerOptions.ProcessorIndex = -1;
+        schedulerOptions.ProcessorGroup = ushort.MaxValue;
+        timerOptions.ProcessorIndex = -1;
+        timerOptions.ProcessorGroup = ushort.MaxValue;
+        timerOptions.Callback = null;
+
+        try
+        {
+            Assert.Equal(TimerState.Stopped, timer.State);
+            Assert.Equal(0, scheduler.TimerCount);
+            AssertSchedulerThreadNotStarted(scheduler);
+
+            for (int run = 0; run < 2; run++)
+            {
+                lock (callbackGate)
+                {
+                    samples = 0;
+                    completed.Reset();
+                    observing = true;
+                }
+
+                timer.Start();
+                AssertCallerAffinityUnchanged(windows, callerWindowsAffinity, callerLinuxAffinity);
+                bool signaled = completed.Wait(TimeSpan.FromSeconds(10));
+                timer.Stop();
+
+                lock (callbackGate)
+                {
+                    observing = false;
+                    Assert.True(signaled, $"Affinity callback sampling timed out on run {run + 1}.");
+                    Assert.Equal(100, samples);
+                    Assert.False(failed, "A callback's native CPU or affinity mask did not match the requested processor.");
+                }
+
+                Assert.Equal(TimerState.Stopped, timer.State);
+                Assert.Equal(0, scheduler.TimerCount);
+                Assert.False(scheduler.IsDisposed);
+                AssertCallerAffinityUnchanged(windows, callerWindowsAffinity, callerLinuxAffinity);
+            }
+        }
+        finally
+        {
+            // Stop can leave a callback in flight; close sampling before disposing its signal.
+            lock (callbackGate)
+            {
+                observing = false;
+            }
+
+            timer.Dispose();
+            suppliedScheduler?.Dispose();
+        }
+
+        AssertCallerAffinityUnchanged(windows, callerWindowsAffinity, callerLinuxAffinity);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ProcessorAffinity_DefaultOptionsRemainUnboundAndCanStart(bool useSharedScheduler)
+    {
+        var schedulerOptions = new HighResolutionSchedulerOptions();
+        var timerOptions = new HighResolutionTimerOptions { AutoStart = false };
+        Assert.Null(schedulerOptions.ProcessorIndex);
+        Assert.Equal((ushort)0, schedulerOptions.ProcessorGroup);
+        Assert.Null(timerOptions.ProcessorIndex);
+        Assert.Equal((ushort)0, timerOptions.ProcessorGroup);
+
+        using var completed = new ManualResetEventSlim(false);
+        using var scheduler = useSharedScheduler ? new HighResolutionScheduler(schedulerOptions) : null;
+        int callbacks = 0;
+        timerOptions.Scheduler = scheduler;
+        timerOptions.Callback = () =>
+        {
+            if (Interlocked.Increment(ref callbacks) == 1)
+            {
+                completed.Set();
+            }
+        };
+        using var timer = new HighResolutionTimer(timerOptions);
+        AssertSchedulerThreadNotStarted(timer.Scheduler);
+        timer.Start();
+        Assert.True(completed.Wait(TimeSpan.FromSeconds(10)));
+        timer.Stop();
+        Assert.Equal(TimerState.Stopped, timer.State);
+        Assert.False(timer.Scheduler.IsDisposed);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(int.MinValue)]
+    public void ProcessorAffinity_NegativeIndexIsRejectedByBothConstructors(int processorIndex)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+        {
+            using var scheduler = new HighResolutionScheduler(new HighResolutionSchedulerOptions { ProcessorIndex = processorIndex });
+        });
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+        {
+            using var timer = new HighResolutionTimer(new HighResolutionTimerOptions { ProcessorIndex = processorIndex, AutoStart = false });
+        });
+    }
+
+    [Fact]
+    public void ProcessorAffinity_WindowsIndexMustFitNativePointerMask()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        foreach (int processorIndex in new[] { IntPtr.Size * 8, IntPtr.Size * 8 + 1, int.MaxValue })
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+            {
+                using var scheduler = new HighResolutionScheduler(new HighResolutionSchedulerOptions { ProcessorIndex = processorIndex });
+            });
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+            {
+                using var timer = new HighResolutionTimer(new HighResolutionTimerOptions { ProcessorIndex = processorIndex, AutoStart = false });
+            });
+        }
+    }
+
+    [Fact]
+    public void ProcessorAffinity_GroupWithoutIndexIsRejectedByBothConstructors()
+    {
+        Assert.Throws<ArgumentException>(() =>
+        {
+            using var scheduler = new HighResolutionScheduler(new HighResolutionSchedulerOptions { ProcessorGroup = 1 });
+        });
+        Assert.Throws<ArgumentException>(() =>
+        {
+            using var timer = new HighResolutionTimer(new HighResolutionTimerOptions { ProcessorGroup = 1, AutoStart = false });
+        });
+    }
+
+    [Fact]
+    public void ProcessorAffinity_TimerCannotOverrideSuppliedScheduler()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        using var scheduler = new HighResolutionScheduler();
+        Assert.Throws<ArgumentException>(() =>
+        {
+            using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+            {
+                Scheduler = scheduler,
+                ProcessorIndex = 0,
+                AutoStart = false,
+            });
+        });
+        Assert.False(scheduler.IsDisposed);
+        Assert.Equal(0, scheduler.TimerCount);
+        AssertSchedulerThreadNotStarted(scheduler);
+    }
+
+    [Fact]
+    public void ProcessorAffinity_LinuxRejectsWindowsProcessorGroups()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+        {
+            using var scheduler = new HighResolutionScheduler(new HighResolutionSchedulerOptions { ProcessorIndex = 0, ProcessorGroup = 1 });
+        });
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+        {
+            using var timer = new HighResolutionTimer(new HighResolutionTimerOptions { ProcessorIndex = 0, ProcessorGroup = 1, AutoStart = false });
+        });
+    }
+
+    [Fact]
+    public void ProcessorAffinity_LinuxCanRebindOutsideInheritedThreadMask()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        byte[] original = ReadLinuxAffinity();
+        int first = FindLinuxProcessor(original);
+        byte[] narrowed = new byte[original.Length];
+        narrowed[CpuByteIndex(first)] = (byte)(1 << (first % 8));
+        byte[] remaining = (byte[])original.Clone();
+        remaining[CpuByteIndex(first)] &= (byte)~(1 << (first % 8));
+        if (!remaining.Any(value => value != 0))
+        {
+            return;
+        }
+
+        int target = FindLinuxProcessor(remaining);
+        byte[] observed = new byte[original.Length];
+        using var completed = new ManualResetEventSlim(false);
+        bool matched = false;
+        try
+        {
+            Assert.Equal(0, sched_setaffinity(0, new UIntPtr((uint)narrowed.Length), narrowed));
+            using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+            {
+                ProcessorIndex = target,
+                Mode = WaitMode.Kernel,
+                AutoReset = false,
+                Callback = () =>
+                {
+                    matched = MatchesNativeProcessor(false, target, 0, observed);
+                    completed.Set();
+                },
+            });
+            Assert.True(completed.Wait(TimeSpan.FromSeconds(10)));
+            Assert.True(matched);
+            Assert.Equal(narrowed, ReadLinuxAffinity());
+        }
+        finally
+        {
+            Assert.Equal(0, sched_setaffinity(0, new UIntPtr((uint)original.Length), original));
+        }
+
+        Assert.Equal(original, ReadLinuxAffinity());
+    }
+
+    [Fact]
+    public void ProcessorAffinity_UnsupportedPlatformsRejectExplicitBinding()
+    {
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        Assert.Throws<PlatformNotSupportedException>(() =>
+        {
+            using var scheduler = new HighResolutionScheduler(new HighResolutionSchedulerOptions { ProcessorIndex = 0 });
+        });
+        Assert.Throws<PlatformNotSupportedException>(() =>
+        {
+            using var timer = new HighResolutionTimer(new HighResolutionTimerOptions { ProcessorIndex = 0, AutoStart = false });
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ProcessorAffinity_InvalidNativeTargetFailsStartWithoutArming(bool useSharedScheduler)
+    {
+        bool windows = OperatingSystem.IsWindows();
+        if (!windows && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        int processorIndex = windows ? 0 : int.MaxValue;
+        ushort processorGroup = windows ? ushort.MaxValue : (ushort)0;
+        using var suppliedScheduler = useSharedScheduler
+            ? new HighResolutionScheduler(new HighResolutionSchedulerOptions
+            {
+                ProcessorIndex = processorIndex,
+                ProcessorGroup = processorGroup,
+            })
+            : null;
+        int callbacks = 0;
+        using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+        {
+            Scheduler = suppliedScheduler,
+            ProcessorIndex = useSharedScheduler ? null : processorIndex,
+            ProcessorGroup = useSharedScheduler ? (ushort)0 : processorGroup,
+            DueTime = TimeSpan.Zero,
+            AutoStart = false,
+            Callback = () => Interlocked.Increment(ref callbacks),
+        });
+        HighResolutionScheduler scheduler = timer.Scheduler;
+        Assert.False(scheduler.IsDisposed);
+        Assert.Equal(0, scheduler.TimerCount);
+        AssertSchedulerThreadNotStarted(scheduler);
+
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => timer.Start());
+        if (windows)
+        {
+            Assert.IsType<Win32Exception>(error.InnerException);
+        }
+        else
+        {
+            Assert.IsType<ArgumentOutOfRangeException>(error.InnerException);
+        }
+
+        Assert.Equal(0, Volatile.Read(ref callbacks));
+        Assert.Equal(TimerState.Stopped, timer.State);
+        Assert.Equal(0, scheduler.TimerCount);
+        Assert.Equal(0L, scheduler.TotalFiredTicks);
+        Assert.True(scheduler.IsDisposed);
+        Assert.Throws<ObjectDisposedException>(() => timer.Start());
+        Assert.Equal(0, Volatile.Read(ref callbacks));
+        Assert.Equal(TimerState.Stopped, timer.State);
+        Assert.Equal(0, scheduler.TimerCount);
+        Assert.True(scheduler.IsDisposed);
+    }
+
+    [Fact]
+    public void ProcessorAffinity_AutoStartFailureReleasesGcLease()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        int requests = RuntimeTuning.GcLatencyRequestCount;
+        System.Runtime.GCLatencyMode mode = System.Runtime.GCSettings.LatencyMode;
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            using var timer = new HighResolutionTimer(new HighResolutionTimerOptions
+            {
+                ProcessorIndex = 0,
+                ProcessorGroup = ushort.MaxValue,
+                PreferSustainedLowLatencyGc = true,
+            });
+        });
+        Assert.Equal(requests, RuntimeTuning.GcLatencyRequestCount);
+        Assert.Equal(mode, System.Runtime.GCSettings.LatencyMode);
+    }
+
+    private static int CpuByteIndex(int index)
+    {
+        int offset = index / (IntPtr.Size * 8) * IntPtr.Size;
+        int byteInWord = index / 8 % IntPtr.Size;
+        return offset + (BitConverter.IsLittleEndian ? byteInWord : IntPtr.Size - 1 - byteInWord);
+    }
+
+    private static void AssertSchedulerThreadNotStarted(HighResolutionScheduler scheduler)
+    {
+        // ThreadId is reserved at construction, so inspect the thread's actual startup state.
+        var field = typeof(HighResolutionScheduler).GetField("_thread",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        var thread = Assert.IsType<Thread>(field?.GetValue(scheduler));
+        Assert.True((thread.ThreadState & System.Threading.ThreadState.Unstarted) != 0);
+    }
+
+    private static int FindWindowsProcessor(UIntPtr mask)
+    {
+        for (int index = IntPtr.Size * 8 - 1; index >= 0; index--)
+        {
+            if ((mask.ToUInt64() & (1UL << index)) != 0)
+            {
+                return index;
+            }
+        }
+
+        throw new InvalidOperationException("The caller has no allowed Windows processor.");
+    }
+
+    private static int FindLinuxProcessor(byte[] mask)
+    {
+        for (int index = 0; index < mask.Length * 8; index++)
+        {
+            if ((mask[CpuByteIndex(index)] & (1 << (index % 8))) != 0)
+            {
+                return index;
+            }
+        }
+
+        throw new InvalidOperationException("The caller has no allowed Linux processor.");
+    }
+
+    private static NativeGroupAffinity ReadWindowsAffinity()
+    {
+        if (!GetThreadGroupAffinity(GetCurrentThread(), out NativeGroupAffinity affinity))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        return affinity;
+    }
+
+    private static byte[] ReadLinuxAffinity()
+    {
+        for (int size = 128; size <= 1024 * 1024; size *= 2)
+        {
+            var mask = new byte[size];
+            if (sched_getaffinity(0, new UIntPtr((uint)size), mask) == 0)
+            {
+                return mask;
+            }
+
+            int error = Marshal.GetLastWin32Error();
+            if (error != 22)
+            {
+                throw new Win32Exception(error);
+            }
+        }
+
+        throw new InvalidOperationException("The native Linux affinity mask exceeded the test buffer limit.");
+    }
+
+    private static bool MatchesNativeProcessor(bool windows, int processorIndex, ushort processorGroup, byte[] linuxMask)
+    {
+        if (windows)
+        {
+            NativeGroupAffinity affinity = ReadWindowsAffinity();
+            GetCurrentProcessorNumberEx(out NativeProcessorNumber processor);
+            return processor.Group == processorGroup && processor.Number == processorIndex
+                && affinity.Group == processorGroup && affinity.Mask.ToUInt64() == (1UL << processorIndex);
+        }
+
+        if (sched_getcpu() != processorIndex
+            || sched_getaffinity(0, new UIntPtr((uint)linuxMask.Length), linuxMask) != 0)
+        {
+            return false;
+        }
+
+        for (int index = 0; index < linuxMask.Length; index++)
+        {
+            byte expected = index == CpuByteIndex(processorIndex) ? (byte)(1 << (processorIndex % 8)) : (byte)0;
+            if (linuxMask[index] != expected)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void AssertCallerAffinityUnchanged(bool windows, NativeGroupAffinity windowsBefore, byte[] linuxBefore)
+    {
+        if (windows)
+        {
+            NativeGroupAffinity after = ReadWindowsAffinity();
+            Assert.Equal(windowsBefore.Group, after.Group);
+            Assert.Equal(windowsBefore.Mask, after.Mask);
+        }
+        else
+        {
+            Assert.Equal(linuxBefore, ReadLinuxAffinity());
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeGroupAffinity
+    {
+        public UIntPtr Mask;
+        public ushort Group;
+        public ushort Reserved0;
+        public ushort Reserved1;
+        public ushort Reserved2;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeProcessorNumber
+    {
+        public ushort Group;
+        public byte Number;
+        public byte Reserved;
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentThread();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetThreadGroupAffinity(IntPtr thread, out NativeGroupAffinity affinity);
+
+    [DllImport("kernel32.dll")]
+    private static extern void GetCurrentProcessorNumberEx(out NativeProcessorNumber processor);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sched_getaffinity(int pid, UIntPtr size, [Out] byte[] mask);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sched_setaffinity(int pid, UIntPtr size, [In] byte[] mask);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int sched_getcpu();
 
     [Fact]
     public void SpinModeBurnsACore_WhileKernelModeIdlesForFree()

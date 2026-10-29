@@ -12,27 +12,34 @@ namespace OODD.Timer.Benchmark;
 /// 再拆成两个指标输出：<b>每拍迟到</b>（相邻落点间隔减去周期，即抖动）与<b>累积漂移</b>（首尾之差）。
 /// 只测"距上一次触发的间隔"会把漂移掩盖掉，那正是普通定时器的致命处；
 /// 只报累计落后又分不清"每次都偏一点"和"偏一次但不再累加"，所以两者都给。</para>
-/// <para>用法：<c>dotnet run -c Release -- [周期ms] [拍数]</c>，默认 1ms × 1000 拍。</para>
+/// <para>用法：<c>dotnet run -c Release -- [周期ms] [拍数] [rt]</c>，默认 1ms × 1000 拍；
+/// 末尾加 <c>rt</c> 会多跑两行 Windows <c>THREAD_PRIORITY_TIME_CRITICAL</c> 的对照。</para>
 /// </remarks>
 internal static class Program
 {
     private static async Task<int> Main(string[] args)
     {
+        if (args.Length > 0 && string.Equals(args[0], "--gc-probe", StringComparison.OrdinalIgnoreCase))
+        {
+            return GcProbe.Run(args);
+        }
+
         double periodMs = args.Length > 0
             ? double.Parse(args[0], CultureInfo.InvariantCulture)
             : 1.0;
         int ticks = args.Length > 1
             ? int.Parse(args[1], CultureInfo.InvariantCulture)
             : 1_000;
+        bool realtime = args.Length > 2 && string.Equals(args[2], "rt", StringComparison.OrdinalIgnoreCase);
 
         if (periodMs <= 0 || ticks < 20)
         {
-            Console.Error.WriteLine("用法: dotnet run -c Release -- <周期ms> <拍数(>=20)>");
+            Console.Error.WriteLine("用法: dotnet run -c Release -- <周期ms> <拍数(>=20)> [rt]");
             return 2;
         }
 
         var period = TimeSpan.FromMilliseconds(periodMs);
-        Console.WriteLine($"# OODD.Timer benchmark  (period={Name(period)}, ticks={ticks})");
+        Console.WriteLine($"# OODD.Timer benchmark  (period={Name(period)}, ticks={ticks}{(realtime ? ", realtime" : string.Empty)})");
         Console.WriteLine($"# {HiResClock.DescribePlatform()}");
         Console.WriteLine($"# {HighResolutionWait.GetPlatformInfo()}");
         Console.WriteLine();
@@ -69,6 +76,12 @@ internal static class Program
         Probe("OODD.Timer (Kernel) 之后");
         rows.Add(MeasureOoddTimer("OODD.Timer (Hybrid)", period, ticks, WaitMode.Hybrid));
         rows.Add(MeasureOoddTimer("OODD.Timer (Spin)", period, ticks, WaitMode.Spin));
+        if (realtime)
+        {
+            // TIME_CRITICAL 只对"长时间自旋"的两档有意义：Kernel 档本来就不占 CPU。
+            rows.Add(MeasureOoddTimer("OODD.Timer (Hybrid, TIME_CRITICAL)", period, ticks, WaitMode.Hybrid, realtimePriority: true));
+            rows.Add(MeasureOoddTimer("OODD.Timer (Spin, TIME_CRITICAL)", period, ticks, WaitMode.Spin, realtimePriority: true));
+        }
 
         Console.WriteLine("## Markdown 表格（可直接贴进 README）");
         Console.WriteLine();
@@ -284,7 +297,7 @@ internal static class Program
         return Build($"PeriodicTimer ({Name(period)})", lateness.ToArray(), ticks, cpu);
     }
 
-    private static Row MeasureOoddTimer(string name, TimeSpan period, int ticks, WaitMode mode)
+    private static Row MeasureOoddTimer(string name, TimeSpan period, int ticks, WaitMode mode, bool realtimePriority = false)
     {
         var lateness = new List<double>(ticks);
         using var done = new ManualResetEventSlim();
@@ -296,6 +309,7 @@ internal static class Program
             Period = period,
             Mode = mode,
             AutoStart = false,
+            UseRealTimePriority = realtimePriority,
         });
 
         timer.Elapsed += (_, e) =>

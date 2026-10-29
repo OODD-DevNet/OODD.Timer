@@ -76,6 +76,7 @@ internal static class KernelWait
     /// 因此精度就是本平台的内核等待精度。
     /// </summary>
     /// <param name="durationTicks">等待时长；&lt;= 0 时立即返回。</param>
+    [System.Runtime.CompilerServices.MethodImpl(JitHints.AggressiveOptimization)]
     public static void Sleep(long durationTicks)
     {
         if (durationTicks <= 0)
@@ -103,6 +104,7 @@ internal static class KernelWait
     /// <param name="chunkTicks">单段最长等待时长；&lt;= 0 表示不分段。</param>
     /// <param name="wake">可选的提前唤醒信号。</param>
     /// <returns><see langword="true"/> 表示已到期；<see langword="false"/> 表示被 <paramref name="wake"/> 打断。</returns>
+    [System.Runtime.CompilerServices.MethodImpl(JitHints.AggressiveOptimization)]
     public static bool WaitUntil(long deadlineTimestamp, long chunkTicks, ManualResetEventSlim? wake)
     {
         while (true)
@@ -148,6 +150,7 @@ internal static class KernelWait
     /// </summary>
     /// <param name="durationTicks">等待时长（tick）。</param>
     /// <returns><see langword="false"/> 表示本线程用不了高分辨率句柄，调用方应改走 <see cref="SleepManaged"/>。</returns>
+    [System.Runtime.CompilerServices.MethodImpl(JitHints.AggressiveOptimization)]
     private static bool SleepWindows(long durationTicks)
     {
         WaitHandleTimer? timer = GetOrCreateWindowsHandle();

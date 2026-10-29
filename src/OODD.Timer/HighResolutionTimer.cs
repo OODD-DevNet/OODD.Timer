@@ -159,6 +159,9 @@ public sealed class HighResolutionTimer : IDisposable
                 Name = Name,
                 Mode = _options.Mode,
                 ThreadPriority = _options.ThreadPriority,
+                UseRealTimePriority = _options.UseRealTimePriority,
+                ProcessorIndex = _options.ProcessorIndex,
+                ProcessorGroup = _options.ProcessorGroup,
             });
             _ownsScheduler = true;
         }
@@ -175,7 +178,15 @@ public sealed class HighResolutionTimer : IDisposable
 
         if (_options.AutoStart)
         {
-            Start();
+            try
+            {
+                Start();
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
         }
     }
 
@@ -910,6 +921,7 @@ public sealed class HighResolutionTimer : IDisposable
     }
 
     /// <summary>由调度线程在触发一拍时调用：记统计、发事件、通知异步等待者。</summary>
+    [System.Runtime.CompilerServices.MethodImpl(JitHints.AggressiveOptimization)]
     internal void FireCore(long dueTimestamp, long firedTimestamp, double latenessNanos, int missedTicks)
     {
         Volatile.Write(ref _lastDueTimestamp, dueTimestamp);
